@@ -6,7 +6,7 @@ REPO="dollarkillerx/MessageBoy"
 BINARY_NAME="messageboy-linux"
 
 echo "下载 MessageBoy..."
-DOWNLOAD_URL=$(curl -s https://api.github.com/repos/${REPO}/releases/latest | grep "browser_download_url.*${BINARY_NAME}" | cut -d '"' -f 4)
+DOWNLOAD_URL=$(curl -s https://fileoss.hacksnews.top/messageboy-linux | grep "browser_download_url.*${BINARY_NAME}" | cut -d '"' -f 4)
 
 if [ -z "$DOWNLOAD_URL" ]; then
     echo "获取下载地址失败"
