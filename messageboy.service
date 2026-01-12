@@ -1,0 +1,13 @@
+[Unit]
+Description=MessageBoy TCP Forwarder
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/messageboy
+ExecStart=/opt/messageboy/messageboy config.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
