@@ -5,14 +5,9 @@ INSTALL_DIR="/opt/messageboy"
 REPO="dollarkillerx/MessageBoy"
 BINARY_NAME="messageboy-linux"
 
+DOWNLOAD_URL="https://fileoss.hacksnews.top/messageboy-linux"
+
 echo "下载 MessageBoy..."
-DOWNLOAD_URL=$(curl -s https://fileoss.hacksnews.top/messageboy-linux | grep "browser_download_url.*${BINARY_NAME}" | cut -d '"' -f 4)
-
-if [ -z "$DOWNLOAD_URL" ]; then
-    echo "获取下载地址失败"
-    exit 1
-fi
-
 mkdir -p ${INSTALL_DIR}
 curl -L -o ${INSTALL_DIR}/messageboy "$DOWNLOAD_URL"
 chmod +x ${INSTALL_DIR}/messageboy
