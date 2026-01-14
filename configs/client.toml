@@ -1,0 +1,19 @@
+# MessageBoy Client 配置文件
+
+[Client]
+ServerURL = "http://localhost:8080"
+Token = "your-registration-token"
+
+[Connection]
+ReconnectInterval = 5
+MaxReconnectInterval = 60
+HeartbeatInterval = 30
+
+[Logging]
+Level = "info"
+File = ""
+
+[Forwarder]
+BufferSize = 32768
+ConnectTimeout = 10
+IdleTimeout = 300

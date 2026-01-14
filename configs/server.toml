@@ -1,0 +1,39 @@
+# MessageBoy Server Manager 配置文件
+
+[Server]
+Host = "0.0.0.0"
+Port = 8080
+Debug = true
+ExternalURL = "http://localhost:8080"
+
+[Database]
+Host = "localhost"
+Port = 5432
+User = "messageboy"
+Password = "messageboy"
+DBName = "messageboy"
+SSLMode = "disable"
+MaxIdleConns = 10
+MaxOpenConns = 100
+ConnMaxLifetime = 3600
+
+[JWT]
+SecretKey = "change-me-in-production-32bytes!"
+ExpireHours = 24
+Issuer = "messageboy"
+
+[Admin]
+Username = "admin"
+Password = "admin123"
+
+[WebSocket]
+Endpoint = "/ws"
+PingInterval = 30
+PongTimeout = 60
+OfflineThreshold = 90
+
+[Logging]
+Level = "debug"
+File = ""
+MaxSize = 100
+MaxAge = 30
