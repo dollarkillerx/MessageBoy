@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h } from 'vue'
+import { h, computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   NLayout,
@@ -29,35 +29,35 @@ function renderIcon(icon: typeof HomeOutline) {
 
 const menuOptions: MenuOption[] = [
   {
-    label: () => h(RouterLink, { to: '/' }, { default: () => 'Dashboard' }),
+    label: () => h(RouterLink, { to: '/' }, { default: () => '仪表盘' }),
     key: 'dashboard',
     icon: renderIcon(HomeOutline)
   },
   {
-    label: () => h(RouterLink, { to: '/clients' }, { default: () => 'Clients' }),
+    label: () => h(RouterLink, { to: '/clients' }, { default: () => '客户端' }),
     key: 'clients',
     icon: renderIcon(DesktopOutline)
   },
   {
-    label: () => h(RouterLink, { to: '/rules' }, { default: () => 'Forward Rules' }),
+    label: () => h(RouterLink, { to: '/rules' }, { default: () => '转发规则' }),
     key: 'rules',
     icon: renderIcon(GitNetworkOutline)
   },
   {
-    label: () => h(RouterLink, { to: '/groups' }, { default: () => 'Proxy Groups' }),
+    label: () => h(RouterLink, { to: '/groups' }, { default: () => '代理组' }),
     key: 'groups',
     icon: renderIcon(LayersOutline)
   }
 ]
 
-function getActiveKey() {
+const activeKey = computed(() => {
   const path = route.path
   if (path === '/') return 'dashboard'
   if (path.startsWith('/clients')) return 'clients'
   if (path.startsWith('/rules')) return 'rules'
   if (path.startsWith('/groups')) return 'groups'
   return 'dashboard'
-}
+})
 </script>
 
 <template>
@@ -73,7 +73,7 @@ function getActiveKey() {
       </div>
       <NMenu
         :options="menuOptions"
-        :value="getActiveKey()"
+        :value="activeKey"
         :indent="24"
       />
       <div class="sider-footer">
@@ -81,7 +81,7 @@ function getActiveKey() {
           <template #icon>
             <NIcon><LogOutOutline /></NIcon>
           </template>
-          Logout
+          退出登录
         </NButton>
       </div>
     </NLayoutSider>

@@ -86,7 +86,7 @@ export interface RpcRequest {
   jsonrpc: '2.0'
   method: string
   params: Record<string, unknown>
-  id: number
+  id: string
 }
 
 export interface RpcResponse<T = unknown> {
@@ -96,5 +96,5 @@ export interface RpcResponse<T = unknown> {
     code: number
     message: string
   }
-  id: number
+  id: string
 }

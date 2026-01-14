@@ -45,32 +45,32 @@ const trafficSummary = ref<TrafficSummary[]>([])
 
 const trafficColumns: DataTableColumns<TrafficSummary> = [
   {
-    title: 'Rule',
+    title: '规则',
     key: 'rule_name',
     ellipsis: { tooltip: true }
   },
   {
-    title: 'Client',
+    title: '客户端',
     key: 'client_name',
     ellipsis: { tooltip: true }
   },
   {
-    title: 'Bytes In',
+    title: '入站流量',
     key: 'bytes_in_str',
     width: 100
   },
   {
-    title: 'Bytes Out',
+    title: '出站流量',
     key: 'bytes_out_str',
     width: 100
   },
   {
-    title: 'Total',
+    title: '总流量',
     key: 'total_bytes_str',
     width: 100
   },
   {
-    title: 'Active',
+    title: '活跃',
     key: 'active_conns',
     width: 80,
     render(row) {
@@ -80,7 +80,7 @@ const trafficColumns: DataTableColumns<TrafficSummary> = [
     }
   },
   {
-    title: 'Total Conns',
+    title: '总连接',
     key: 'total_connections',
     width: 100
   }
@@ -100,16 +100,20 @@ async function loadData() {
       getTrafficSummary()
     ])
 
+    const clientList = Array.isArray(clients) ? clients : []
+    const ruleList = Array.isArray(rules) ? rules : []
+    const groupList = Array.isArray(groups) ? groups : []
+
     stats.value = {
-      totalClients: clients.length,
-      onlineClients: clients.filter((c: Client) => c.status === 'online').length,
-      totalRules: rules.length,
-      enabledRules: rules.filter((r: ForwardRule) => r.enabled).length,
-      totalGroups: groups.length
+      totalClients: clientList.length,
+      onlineClients: clientList.filter((c: Client) => c.status === 'online').length,
+      totalRules: ruleList.length,
+      enabledRules: ruleList.filter((r: ForwardRule) => r.enabled).length,
+      totalGroups: groupList.length
     }
 
-    trafficStats.value = traffic
-    trafficSummary.value = summary || []
+    trafficStats.value = traffic || trafficStats.value
+    trafficSummary.value = Array.isArray(summary) ? summary : []
   } catch (error) {
     console.error('Failed to load dashboard data:', error)
   } finally {
@@ -133,19 +137,19 @@ onUnmounted(() => {
 <template>
   <div>
     <NSpace vertical size="large">
-      <NText tag="h2" style="margin: 0">Dashboard</NText>
+      <NText tag="h2" style="margin: 0">仪表盘</NText>
 
       <NSpin :show="loading">
-        <!-- Basic Stats -->
+        <!-- 基础统计 -->
         <NGrid :x-gap="16" :y-gap="16" cols="1 s:2 m:3 l:5" responsive="screen">
           <NGi>
             <NCard>
-              <NStatistic label="Total Clients" :value="stats.totalClients" />
+              <NStatistic label="客户端总数" :value="stats.totalClients" />
             </NCard>
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Online Clients" :value="stats.onlineClients">
+              <NStatistic label="在线客户端" :value="stats.onlineClients">
                 <template #suffix>
                   <NText depth="3"> / {{ stats.totalClients }}</NText>
                 </template>
@@ -154,12 +158,12 @@ onUnmounted(() => {
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Forward Rules" :value="stats.totalRules" />
+              <NStatistic label="转发规则" :value="stats.totalRules" />
             </NCard>
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Enabled Rules" :value="stats.enabledRules">
+              <NStatistic label="已启用规则" :value="stats.enabledRules">
                 <template #suffix>
                   <NText depth="3"> / {{ stats.totalRules }}</NText>
                 </template>
@@ -168,49 +172,49 @@ onUnmounted(() => {
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Proxy Groups" :value="stats.totalGroups" />
+              <NStatistic label="代理组" :value="stats.totalGroups" />
             </NCard>
           </NGi>
         </NGrid>
 
-        <!-- Traffic Stats -->
-        <NText tag="h3" style="margin: 24px 0 16px">Traffic Statistics</NText>
+        <!-- 流量统计 -->
+        <NText tag="h3" style="margin: 24px 0 16px">流量统计</NText>
         <NGrid :x-gap="16" :y-gap="16" cols="1 s:2 m:3 l:4" responsive="screen">
           <NGi>
             <NCard>
-              <NStatistic label="Total Traffic" :value="trafficStats.total_bytes_str" />
+              <NStatistic label="总流量" :value="trafficStats.total_bytes_str" />
             </NCard>
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Bytes In" :value="trafficStats.bytes_in_str" />
+              <NStatistic label="入站流量" :value="trafficStats.bytes_in_str" />
             </NCard>
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Bytes Out" :value="trafficStats.bytes_out_str" />
+              <NStatistic label="出站流量" :value="trafficStats.bytes_out_str" />
             </NCard>
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="Active Connections" :value="trafficStats.active_connections">
+              <NStatistic label="活跃连接" :value="trafficStats.active_connections">
                 <template #suffix>
-                  <NText depth="3"> / {{ trafficStats.total_connections }} total</NText>
+                  <NText depth="3"> / {{ trafficStats.total_connections }} 总计</NText>
                 </template>
               </NStatistic>
             </NCard>
           </NGi>
         </NGrid>
 
-        <!-- Traffic Summary Table -->
-        <NText tag="h3" style="margin: 24px 0 16px">Traffic by Rule</NText>
+        <!-- 规则流量明细 -->
+        <NText tag="h3" style="margin: 24px 0 16px">规则流量明细</NText>
         <NCard>
           <NDataTable
             :columns="trafficColumns"
             :data="trafficSummary"
             :bordered="false"
             size="small"
-            :pagination="{ pageSize: 10 }"
+            :pagination="trafficSummary.length > 10 ? { pageSize: 10 } : false"
           />
         </NCard>
       </NSpin>

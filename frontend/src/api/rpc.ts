@@ -10,7 +10,7 @@ export async function rpcCall<T>(method: string, params: Record<string, unknown>
     jsonrpc: '2.0',
     method,
     params,
-    id: ++requestId
+    id: String(++requestId)
   }
 
   const token = localStorage.getItem('token')

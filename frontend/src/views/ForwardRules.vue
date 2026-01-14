@@ -50,34 +50,34 @@ const formData = ref({
 })
 
 const clientOptions = computed<SelectOption[]>(() =>
-  clients.value.map(c => ({ label: `${c.name} (${c.status})`, value: c.id }))
+  clients.value.map(c => ({ label: `${c.name} (${c.status === 'online' ? '在线' : '离线'})`, value: c.id }))
 )
 
 const relayOptions = computed<SelectOption[]>(() => [
-  ...groups.value.map(g => ({ label: `@${g.name} (Group)`, value: `@${g.name}` })),
+  ...groups.value.map(g => ({ label: `@${g.name} (代理组)`, value: `@${g.name}` })),
   ...clients.value.map(c => ({ label: c.name, value: c.id }))
 ])
 
 const typeOptions: SelectOption[] = [
-  { label: 'Direct', value: 'direct' },
-  { label: 'Relay', value: 'relay' }
+  { label: '直连', value: 'direct' },
+  { label: '中继', value: 'relay' }
 ]
 
 const columns: DataTableColumns<ForwardRule> = [
-  { title: 'Name', key: 'name' },
+  { title: '名称', key: 'name' },
   {
-    title: 'Type',
+    title: '类型',
     key: 'type',
     render(row) {
       return h(NTag, {
         type: row.type === 'relay' ? 'info' : 'default',
         size: 'small'
-      }, { default: () => row.type })
+      }, { default: () => row.type === 'relay' ? '中继' : '直连' })
     }
   },
-  { title: 'Listen', key: 'listen_addr' },
+  { title: '监听地址', key: 'listen_addr' },
   {
-    title: 'Listen Client',
+    title: '监听客户端',
     key: 'listen_client',
     render(row) {
       const client = clients.value.find(c => c.id === row.listen_client)
@@ -85,7 +85,7 @@ const columns: DataTableColumns<ForwardRule> = [
     }
   },
   {
-    title: 'Relay Chain',
+    title: '中继链',
     key: 'relay_chain',
     render(row) {
       if (!row.relay_chain?.length) return '-'
@@ -96,9 +96,9 @@ const columns: DataTableColumns<ForwardRule> = [
       })
     }
   },
-  { title: 'Exit', key: 'exit_addr' },
+  { title: '出口地址', key: 'exit_addr' },
   {
-    title: 'Enabled',
+    title: '启用',
     key: 'enabled',
     render(row) {
       return h(NSwitch, {
@@ -108,7 +108,7 @@ const columns: DataTableColumns<ForwardRule> = [
     }
   },
   {
-    title: 'Actions',
+    title: '操作',
     key: 'actions',
     render(row) {
       return h(NSpace, null, {
@@ -116,12 +116,12 @@ const columns: DataTableColumns<ForwardRule> = [
           h(NButton, {
             size: 'small',
             onClick: () => openEdit(row)
-          }, { default: () => 'Edit' }),
+          }, { default: () => '编辑' }),
           h(NPopconfirm, {
             onPositiveClick: () => handleDelete(row.id)
           }, {
-            trigger: () => h(NButton, { size: 'small', type: 'error', secondary: true }, { default: () => 'Delete' }),
-            default: () => 'Delete this rule?'
+            trigger: () => h(NButton, { size: 'small', type: 'error', secondary: true }, { default: () => '删除' }),
+            default: () => '确定删除此规则？'
           })
         ]
       })
@@ -137,9 +137,9 @@ async function loadData() {
       getClientList(),
       getProxyGroupList()
     ])
-    rules.value = rulesData
-    clients.value = clientsData
-    groups.value = groupsData
+    rules.value = Array.isArray(rulesData) ? rulesData : []
+    clients.value = Array.isArray(clientsData) ? clientsData : []
+    groups.value = Array.isArray(groupsData) ? groupsData : []
   } catch (error: unknown) {
     message.error((error as Error).message)
   } finally {
@@ -177,7 +177,7 @@ function openEdit(rule: ForwardRule) {
 
 async function handleSubmit() {
   if (!formData.value.name || !formData.value.listen_client) {
-    message.warning('Please fill in required fields')
+    message.warning('请填写必填字段')
     return
   }
 
@@ -185,10 +185,10 @@ async function handleSubmit() {
   try {
     if (editingId.value) {
       await updateForwardRule(editingId.value, formData.value)
-      message.success('Rule updated')
+      message.success('规则已更新')
     } else {
       await createForwardRule(formData.value)
-      message.success('Rule created')
+      message.success('规则已创建')
     }
     showModal.value = false
     await loadData()
@@ -202,7 +202,7 @@ async function handleSubmit() {
 async function handleDelete(id: string) {
   try {
     await deleteForwardRule(id)
-    message.success('Rule deleted')
+    message.success('规则已删除')
     await loadData()
   } catch (error: unknown) {
     message.error((error as Error).message)
@@ -224,15 +224,15 @@ onMounted(loadData)
 <template>
   <NSpace vertical size="large">
     <NSpace justify="space-between" align="center">
-      <NText tag="h2" style="margin: 0">Forward Rules</NText>
+      <NText tag="h2" style="margin: 0">转发规则</NText>
       <NSpace>
         <NButton @click="loadData" :loading="loading">
           <template #icon><NIcon><RefreshOutline /></NIcon></template>
-          Refresh
+          刷新
         </NButton>
         <NButton type="primary" @click="openCreate">
           <template #icon><NIcon><AddOutline /></NIcon></template>
-          Add Rule
+          添加规则
         </NButton>
       </NSpace>
     </NSpace>
@@ -244,52 +244,52 @@ onMounted(loadData)
       :row-key="(row: ForwardRule) => row.id"
     />
 
-    <!-- Create/Edit Modal -->
+    <!-- 创建/编辑弹窗 -->
     <NModal
       v-model:show="showModal"
-      :title="editingId ? 'Edit Rule' : 'Create Rule'"
+      :title="editingId ? '编辑规则' : '创建规则'"
       preset="card"
       style="width: 600px"
     >
       <NForm label-placement="left" label-width="120">
-        <NFormItem label="Name" required>
-          <NInput v-model:value="formData.name" placeholder="Rule name" />
+        <NFormItem label="名称" required>
+          <NInput v-model:value="formData.name" placeholder="规则名称" />
         </NFormItem>
-        <NFormItem label="Type" required>
+        <NFormItem label="类型" required>
           <NSelect v-model:value="formData.type" :options="typeOptions" />
         </NFormItem>
-        <NFormItem label="Listen Address" required>
+        <NFormItem label="监听地址" required>
           <NInput v-model:value="formData.listen_addr" placeholder="0.0.0.0:8080" />
         </NFormItem>
-        <NFormItem label="Listen Client" required>
+        <NFormItem label="监听客户端" required>
           <NSelect
             v-model:value="formData.listen_client"
             :options="clientOptions"
-            placeholder="Select client"
+            placeholder="选择客户端"
             filterable
           />
         </NFormItem>
-        <NFormItem v-if="formData.type === 'relay'" label="Relay Chain">
+        <NFormItem v-if="formData.type === 'relay'" label="中继链">
           <NSelect
             v-model:value="formData.relay_chain"
             :options="relayOptions"
-            placeholder="Select relay nodes"
+            placeholder="选择中继节点"
             multiple
             filterable
           />
         </NFormItem>
-        <NFormItem label="Exit Address" required>
-          <NInput v-model:value="formData.exit_addr" placeholder="target-host:port" />
+        <NFormItem label="出口地址" required>
+          <NInput v-model:value="formData.exit_addr" placeholder="目标主机:端口" />
         </NFormItem>
-        <NFormItem label="Enabled">
+        <NFormItem label="启用">
           <NSwitch v-model:value="formData.enabled" />
         </NFormItem>
       </NForm>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showModal = false">Cancel</NButton>
+          <NButton @click="showModal = false">取消</NButton>
           <NButton type="primary" :loading="modalLoading" @click="handleSubmit">
-            {{ editingId ? 'Update' : 'Create' }}
+            {{ editingId ? '更新' : '创建' }}
           </NButton>
         </NSpace>
       </template>

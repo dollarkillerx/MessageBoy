@@ -8,17 +8,17 @@ ExternalURL = "http://localhost:8080"
 
 [Database]
 Host = "localhost"
-Port = 5432
-User = "messageboy"
-Password = "messageboy"
-DBName = "messageboy"
+Port = 18432
+User = "pacman"
+Password = "MEB3oZZkpxgA1q4WcA10"
+DBName = "pacman"
 SSLMode = "disable"
 MaxIdleConns = 10
 MaxOpenConns = 100
 ConnMaxLifetime = 3600
 
 [JWT]
-SecretKey = "change-me-in-production-32bytes!"
+SecretKey = "993db3a8-c8f0-4ad5-a5c2-1f31688fc777"
 ExpireHours = 24
 Issuer = "messageboy"
 

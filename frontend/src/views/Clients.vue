@@ -38,19 +38,19 @@ const newClientName = ref('')
 const installCommand = ref('')
 
 const columns: DataTableColumns<Client> = [
-  { title: 'Name', key: 'name' },
+  { title: '名称', key: 'name' },
   {
-    title: 'Status',
+    title: '状态',
     key: 'status',
     render(row) {
       return h(NTag, {
         type: row.status === 'online' ? 'success' : 'default',
         size: 'small'
-      }, { default: () => row.status })
+      }, { default: () => row.status === 'online' ? '在线' : '离线' })
     }
   },
   {
-    title: 'Token',
+    title: '令牌',
     key: 'token',
     render(row) {
       return h(NSpace, { align: 'center' }, {
@@ -66,14 +66,14 @@ const columns: DataTableColumns<Client> = [
     }
   },
   {
-    title: 'Last Seen',
+    title: '最后在线',
     key: 'last_seen_at',
     render(row) {
       return row.last_seen_at ? new Date(row.last_seen_at).toLocaleString() : '-'
     }
   },
   {
-    title: 'Actions',
+    title: '操作',
     key: 'actions',
     render(row) {
       return h(NSpace, null, {
@@ -82,20 +82,20 @@ const columns: DataTableColumns<Client> = [
             size: 'small',
             onClick: () => showInstall(row.id)
           }, {
-            default: () => 'Install',
+            default: () => '安装',
             icon: () => h(NIcon, null, { default: () => h(TerminalOutline) })
           }),
           h(NPopconfirm, {
             onPositiveClick: () => handleRegenToken(row.id)
           }, {
-            trigger: () => h(NButton, { size: 'small', secondary: true }, { default: () => 'Regen Token' }),
-            default: () => 'Regenerate token? Client will need to reconnect.'
+            trigger: () => h(NButton, { size: 'small', secondary: true }, { default: () => '重置令牌' }),
+            default: () => '确定重置令牌？客户端需要重新连接。'
           }),
           h(NPopconfirm, {
             onPositiveClick: () => handleDelete(row.id)
           }, {
-            trigger: () => h(NButton, { size: 'small', type: 'error', secondary: true }, { default: () => 'Delete' }),
-            default: () => 'Delete this client?'
+            trigger: () => h(NButton, { size: 'small', type: 'error', secondary: true }, { default: () => '删除' }),
+            default: () => '确定删除此客户端？'
           })
         ]
       })
@@ -106,7 +106,8 @@ const columns: DataTableColumns<Client> = [
 async function loadClients() {
   loading.value = true
   try {
-    clients.value = await getClientList()
+    const data = await getClientList()
+    clients.value = Array.isArray(data) ? data : []
   } catch (error: unknown) {
     message.error((error as Error).message)
   } finally {
@@ -116,14 +117,14 @@ async function loadClients() {
 
 async function handleCreate() {
   if (!newClientName.value) {
-    message.warning('Please enter client name')
+    message.warning('请输入客户端名称')
     return
   }
 
   createLoading.value = true
   try {
     await createClient(newClientName.value)
-    message.success('Client created')
+    message.success('客户端已创建')
     showCreateModal.value = false
     newClientName.value = ''
     await loadClients()
@@ -137,7 +138,7 @@ async function handleCreate() {
 async function handleDelete(id: string) {
   try {
     await deleteClient(id)
-    message.success('Client deleted')
+    message.success('客户端已删除')
     await loadClients()
   } catch (error: unknown) {
     message.error((error as Error).message)
@@ -147,7 +148,7 @@ async function handleDelete(id: string) {
 async function handleRegenToken(id: string) {
   try {
     await regenerateClientToken(id)
-    message.success('Token regenerated')
+    message.success('令牌已重置')
     await loadClients()
   } catch (error: unknown) {
     message.error((error as Error).message)
@@ -166,12 +167,12 @@ async function showInstall(id: string) {
 
 function copyToken(token: string) {
   navigator.clipboard.writeText(token)
-  message.success('Token copied')
+  message.success('令牌已复制')
 }
 
 function copyInstallCommand() {
   navigator.clipboard.writeText(installCommand.value)
-  message.success('Command copied')
+  message.success('命令已复制')
 }
 
 onMounted(loadClients)
@@ -180,15 +181,15 @@ onMounted(loadClients)
 <template>
   <NSpace vertical size="large">
     <NSpace justify="space-between" align="center">
-      <NText tag="h2" style="margin: 0">Clients</NText>
+      <NText tag="h2" style="margin: 0">客户端</NText>
       <NSpace>
         <NButton @click="loadClients" :loading="loading">
           <template #icon><NIcon><RefreshOutline /></NIcon></template>
-          Refresh
+          刷新
         </NButton>
         <NButton type="primary" @click="showCreateModal = true">
           <template #icon><NIcon><AddOutline /></NIcon></template>
-          Add Client
+          添加客户端
         </NButton>
       </NSpace>
     </NSpace>
@@ -200,41 +201,41 @@ onMounted(loadClients)
       :row-key="(row: Client) => row.id"
     />
 
-    <!-- Create Modal -->
+    <!-- 创建弹窗 -->
     <NModal
       v-model:show="showCreateModal"
-      title="Create Client"
+      title="创建客户端"
       preset="card"
       style="width: 400px"
     >
       <NForm>
-        <NFormItem label="Name">
-          <NInput v-model:value="newClientName" placeholder="Client name" />
+        <NFormItem label="名称">
+          <NInput v-model:value="newClientName" placeholder="客户端名称" />
         </NFormItem>
       </NForm>
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="showCreateModal = false">Cancel</NButton>
+          <NButton @click="showCreateModal = false">取消</NButton>
           <NButton type="primary" :loading="createLoading" @click="handleCreate">
-            Create
+            创建
           </NButton>
         </NSpace>
       </template>
     </NModal>
 
-    <!-- Install Modal -->
+    <!-- 安装弹窗 -->
     <NModal
       v-model:show="showInstallModal"
-      title="Install Client"
+      title="安装客户端"
       preset="card"
       style="width: 600px"
     >
       <NSpace vertical>
-        <NText>Run this command on the target machine:</NText>
+        <NText>在目标机器上执行以下命令：</NText>
         <NCode :code="installCommand" language="bash" word-wrap />
         <NButton @click="copyInstallCommand">
           <template #icon><NIcon><CopyOutline /></NIcon></template>
-          Copy Command
+          复制命令
         </NButton>
       </NSpace>
     </NModal>
