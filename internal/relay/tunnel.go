@@ -23,6 +23,7 @@ type TunnelMessage struct {
 	Payload  []byte `json:"payload,omitempty"`
 	Nonce    []byte `json:"nonce,omitempty"`
 	Error    string `json:"error,omitempty"`
+	RuleID   string `json:"rule_id,omitempty"` // 用于流量统计
 }
 
 func (m *TunnelMessage) Marshal() ([]byte, error) {

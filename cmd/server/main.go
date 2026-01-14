@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -49,12 +50,35 @@ func main() {
 	loadBalancer := proxy.NewLoadBalancer(store)
 	server.SetLoadBalancer(loadBalancer)
 
+	// 设置流量统计器
+	server.GetWSServer().SetTrafficCounter(store.Traffic)
+
+	// 启动定期流量统计刷新 (每分钟)
+	trafficFlushStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := store.Traffic.FlushToDatabase(); err != nil {
+					log.Error().Err(err).Msg("Failed to flush traffic stats")
+				}
+			case <-trafficFlushStop:
+				// 最后一次刷新
+				store.Traffic.FlushToDatabase()
+				return
+			}
+		}
+	}()
+
 	// 优雅关闭
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Info().Msg("Shutting down...")
+		close(trafficFlushStop)
 		healthChecker.Stop()
 		os.Exit(0)
 	}()

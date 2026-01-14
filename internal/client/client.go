@@ -22,9 +22,10 @@ type Client struct {
 	secretKey  string
 	wsEndpoint string
 
-	wsConn     *relay.WSClientConn
-	forwarders map[string]ForwarderInterface
-	mu         sync.RWMutex
+	wsConn         *relay.WSClientConn
+	forwarders     map[string]ForwarderInterface
+	mu             sync.RWMutex
+	trafficCounter *TrafficCounter
 
 	stopCh chan struct{}
 }
@@ -37,9 +38,10 @@ type ForwarderInterface interface {
 
 func New(cfg *ClientConfig) *Client {
 	return &Client{
-		cfg:        cfg,
-		forwarders: make(map[string]ForwarderInterface),
-		stopCh:     make(chan struct{}),
+		cfg:            cfg,
+		forwarders:     make(map[string]ForwarderInterface),
+		trafficCounter: NewTrafficCounter(),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -68,6 +70,9 @@ func (c *Client) Run() error {
 
 	// 启动心跳
 	go c.heartbeatLoop()
+
+	// 启动流量上报
+	go c.trafficReportLoop()
 
 	// 等待停止信号
 	<-c.stopCh
@@ -379,6 +384,7 @@ func (c *Client) applyRules(rules []interface{}) {
 				rule["listen_addr"].(string),
 				rule["target_addr"].(string),
 				c.cfg.Forwarder,
+				c.trafficCounter,
 			)
 			c.forwarders[id] = f
 			go f.Start()
@@ -424,6 +430,46 @@ func (c *Client) applyRules(rules []interface{}) {
 				Strs("relay_chain", relayChain).
 				Msg("Started relay forwarder")
 		}
+	}
+}
+
+func (c *Client) trafficReportLoop() {
+	// 每 30 秒上报一次流量
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopCh:
+			// 最后一次上报
+			c.reportTraffic()
+			return
+		case <-ticker.C:
+			c.reportTraffic()
+		}
+	}
+}
+
+func (c *Client) reportTraffic() {
+	reports := c.trafficCounter.GetAndReset()
+	if len(reports) == 0 {
+		return
+	}
+
+	req := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "reportTraffic",
+		"method":  "clientReportTraffic",
+		"params": map[string]interface{}{
+			"client_id": c.clientID,
+			"reports":   reports,
+		},
+	}
+
+	if _, err := c.rpcCall(req); err != nil {
+		log.Warn().Err(err).Msg("Failed to report traffic")
+	} else {
+		log.Debug().Int("rules", len(reports)).Msg("Traffic reported")
 	}
 }
 

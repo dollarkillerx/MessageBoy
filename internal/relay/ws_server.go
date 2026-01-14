@@ -15,6 +15,14 @@ type LoadBalancerInterface interface {
 	DecrementConnections(nodeID string) error
 }
 
+// TrafficCounterInterface 流量统计接口
+type TrafficCounterInterface interface {
+	AddBytesIn(ruleID, clientID string, bytes int64)
+	AddBytesOut(ruleID, clientID string, bytes int64)
+	IncrementConn(ruleID, clientID string)
+	DecrementConn(ruleID, clientID string)
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -31,6 +39,9 @@ type WSServer struct {
 
 	// 负载均衡器
 	loadBalancer LoadBalancerInterface
+
+	// 流量统计器
+	trafficCounter TrafficCounterInterface
 }
 
 // RouteInfo 中继路由信息
@@ -40,11 +51,17 @@ type RouteInfo struct {
 	StreamID       uint32 // 流 ID
 	ExitAddr       string // 最终目标地址
 	NodeID         string // 代理组节点 ID (用于连接统计)
+	RuleID         string // 转发规则 ID (用于流量统计)
 }
 
 // SetLoadBalancer 设置负载均衡器
 func (s *WSServer) SetLoadBalancer(lb LoadBalancerInterface) {
 	s.loadBalancer = lb
+}
+
+// SetTrafficCounter 设置流量统计器
+func (s *WSServer) SetTrafficCounter(tc TrafficCounterInterface) {
+	s.trafficCounter = tc
 }
 
 type WSClient struct {
@@ -232,8 +249,14 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 		StreamID:       msg.StreamID,
 		ExitAddr:       msg.Target,
 		NodeID:         nodeID,
+		RuleID:         msg.RuleID,
 	}
 	s.routesMu.Unlock()
+
+	// 统计连接数
+	if s.trafficCounter != nil && msg.RuleID != "" {
+		s.trafficCounter.IncrementConn(msg.RuleID, sourceClientID)
+	}
 
 	// 转发 Connect 消息到目标 Client
 	// 清除 payload 中的下一跳信息，保留 target 地址
@@ -267,9 +290,18 @@ func (s *WSServer) cleanupRoute(streamID uint32) {
 	}
 	s.routesMu.Unlock()
 
+	if !ok {
+		return
+	}
+
 	// 减少节点连接计数
-	if ok && route.NodeID != "" && s.loadBalancer != nil {
+	if route.NodeID != "" && s.loadBalancer != nil {
 		s.loadBalancer.DecrementConnections(route.NodeID)
+	}
+
+	// 减少流量统计连接数
+	if route.RuleID != "" && s.trafficCounter != nil {
+		s.trafficCounter.DecrementConn(route.RuleID, route.SourceClientID)
 	}
 }
 
@@ -309,18 +341,31 @@ func (s *WSServer) handleData(fromClientID string, msg *TunnelMessage) {
 		return
 	}
 
-	// 确定转发目标
+	// 确定转发目标和流量方向
 	var targetClientID string
+	var isInbound bool // 是否是入站流量 (从源到目标)
 	if fromClientID == route.SourceClientID {
 		targetClientID = route.TargetClientID
+		isInbound = true
 	} else if fromClientID == route.TargetClientID {
 		targetClientID = route.SourceClientID
+		isInbound = false
 	} else {
 		log.Warn().
 			Str("from", fromClientID).
 			Uint32("stream_id", msg.StreamID).
 			Msg("Data from unexpected client")
 		return
+	}
+
+	// 统计流量
+	if s.trafficCounter != nil && route.RuleID != "" {
+		dataLen := int64(len(msg.Payload))
+		if isInbound {
+			s.trafficCounter.AddBytesOut(route.RuleID, route.SourceClientID, dataLen)
+		} else {
+			s.trafficCounter.AddBytesIn(route.RuleID, route.SourceClientID, dataLen)
+		}
 	}
 
 	// 转发数据

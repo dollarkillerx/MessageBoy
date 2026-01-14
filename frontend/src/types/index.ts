@@ -53,6 +53,34 @@ export interface ProxyGroupNode {
   created_at: string
 }
 
+// Traffic types
+export interface TrafficSummary {
+  rule_id: string
+  rule_name: string
+  client_id: string
+  client_name: string
+  bytes_in: number
+  bytes_out: number
+  total_bytes: number
+  connections: number
+  active_conns: number
+  total_connections: number
+  bytes_in_str: string
+  bytes_out_str: string
+  total_bytes_str: string
+}
+
+export interface TotalTraffic {
+  bytes_in: number
+  bytes_out: number
+  total_bytes: number
+  bytes_in_str: string
+  bytes_out_str: string
+  total_bytes_str: string
+  total_connections: number
+  active_connections: number
+}
+
 // RPC types
 export interface RpcRequest {
   jsonrpc: '2.0'

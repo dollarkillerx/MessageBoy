@@ -177,3 +177,56 @@ func (m *ClientGetRulesMethod) Execute(ctx context.Context, params json.RawMessa
 }
 
 func (m *ClientGetRulesMethod) RequireAuth() bool { return false }
+
+// ClientReportTrafficMethod - Client 上报流量统计
+type ClientReportTrafficMethod struct {
+	storage *storage.Storage
+}
+
+func NewClientReportTrafficMethod(s *storage.Storage) *ClientReportTrafficMethod {
+	return &ClientReportTrafficMethod{storage: s}
+}
+
+func (m *ClientReportTrafficMethod) Name() string { return "clientReportTraffic" }
+
+type TrafficReportItem struct {
+	RuleID      string `json:"rule_id"`
+	BytesIn     int64  `json:"bytes_in"`
+	BytesOut    int64  `json:"bytes_out"`
+	Connections int64  `json:"connections"`
+}
+
+type ClientReportTrafficParams struct {
+	ClientID string              `json:"client_id"`
+	Reports  []TrafficReportItem `json:"reports"`
+}
+
+func (m *ClientReportTrafficMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var p ClientReportTrafficParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, errors.New("invalid params")
+	}
+
+	if p.ClientID == "" {
+		return nil, errors.New("client_id is required")
+	}
+
+	// 累加流量到统计器
+	for _, report := range p.Reports {
+		if report.BytesIn > 0 {
+			m.storage.Traffic.AddBytesIn(report.RuleID, p.ClientID, report.BytesIn)
+		}
+		if report.BytesOut > 0 {
+			m.storage.Traffic.AddBytesOut(report.RuleID, p.ClientID, report.BytesOut)
+		}
+		if report.Connections > 0 {
+			m.storage.Traffic.AddConnections(report.RuleID, p.ClientID, report.Connections)
+		}
+	}
+
+	return map[string]interface{}{
+		"ack": true,
+	}, nil
+}
+
+func (m *ClientReportTrafficMethod) RequireAuth() bool { return false }

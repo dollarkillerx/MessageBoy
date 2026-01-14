@@ -15,18 +15,20 @@ type Forwarder struct {
 	targetAddr string
 	cfg        ForwarderSection
 
-	listener net.Listener
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	listener       net.Listener
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
+	trafficCounter *TrafficCounter
 }
 
-func NewForwarder(id, listenAddr, targetAddr string, cfg ForwarderSection) *Forwarder {
+func NewForwarder(id, listenAddr, targetAddr string, cfg ForwarderSection, tc *TrafficCounter) *Forwarder {
 	return &Forwarder{
-		id:         id,
-		listenAddr: listenAddr,
-		targetAddr: targetAddr,
-		cfg:        cfg,
-		stopCh:     make(chan struct{}),
+		id:             id,
+		listenAddr:     listenAddr,
+		targetAddr:     targetAddr,
+		cfg:            cfg,
+		stopCh:         make(chan struct{}),
+		trafficCounter: tc,
 	}
 }
 
@@ -78,6 +80,12 @@ func (f *Forwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()
 
+	// 统计连接数
+	if f.trafficCounter != nil {
+		f.trafficCounter.IncrementConn(f.id)
+		defer f.trafficCounter.DecrementConn(f.id)
+	}
+
 	// 连接目标
 	targetConn, err := net.DialTimeout("tcp", f.targetAddr, time.Duration(f.cfg.ConnectTimeout)*time.Second)
 	if err != nil {
@@ -89,13 +97,25 @@ func (f *Forwarder) handleConnection(clientConn net.Conn) {
 	// 双向转发
 	done := make(chan struct{}, 2)
 
+	// 客户端 -> 目标 (出站流量)
 	go func() {
-		io.Copy(targetConn, clientConn)
+		if f.trafficCounter != nil {
+			countingReader := NewCountingReader(clientConn, f.trafficCounter, f.id, false)
+			io.Copy(targetConn, countingReader)
+		} else {
+			io.Copy(targetConn, clientConn)
+		}
 		done <- struct{}{}
 	}()
 
+	// 目标 -> 客户端 (入站流量)
 	go func() {
-		io.Copy(clientConn, targetConn)
+		if f.trafficCounter != nil {
+			countingReader := NewCountingReader(targetConn, f.trafficCounter, f.id, true)
+			io.Copy(clientConn, countingReader)
+		} else {
+			io.Copy(clientConn, targetConn)
+		}
 		done <- struct{}{}
 	}()
 

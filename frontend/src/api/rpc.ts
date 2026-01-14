@@ -104,3 +104,13 @@ export const removeProxyGroupNode = (id: string) =>
 
 export const updateProxyGroupNode = (id: string, priority: number, weight: number) =>
   rpcCall<import('../types').ProxyGroupNode>('updateProxyGroupNode', { id, priority, weight })
+
+// Traffic Stats
+export const getTrafficSummary = () =>
+  rpcCall<import('../types').TrafficSummary[]>('getTrafficSummary', {})
+
+export const getTotalTraffic = () =>
+  rpcCall<import('../types').TotalTraffic>('getTotalTraffic', {})
+
+export const getTodayTraffic = () =>
+  rpcCall<import('../types').TotalTraffic>('getTodayTraffic', {})

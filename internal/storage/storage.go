@@ -18,6 +18,7 @@ type Storage struct {
 	Client     *ClientRepository
 	Forward    *ForwardRepository
 	ProxyGroup *ProxyGroupRepository
+	Traffic    *TrafficRepository
 }
 
 func NewStorage(cfg *conf.DatabaseConfig) (*Storage, error) {
@@ -48,6 +49,7 @@ func NewStorage(cfg *conf.DatabaseConfig) (*Storage, error) {
 		&model.ForwardRule{},
 		&model.ProxyGroup{},
 		&model.ProxyGroupNode{},
+		&model.TrafficStats{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -59,6 +61,7 @@ func NewStorage(cfg *conf.DatabaseConfig) (*Storage, error) {
 		Client:     NewClientRepository(db),
 		Forward:    NewForwardRepository(db),
 		ProxyGroup: NewProxyGroupRepository(db),
+		Traffic:    NewTrafficRepository(db),
 	}, nil
 }
 
