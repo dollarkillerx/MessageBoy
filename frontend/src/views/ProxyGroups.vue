@@ -98,7 +98,6 @@ const nodeColumns: DataTableColumns<ProxyGroupNode> = [
   { title: '优先级', key: 'priority' },
   { title: '权重', key: 'weight' },
   { title: '活跃连接', key: 'active_conns' },
-  { title: '总连接', key: 'total_conns' },
   {
     title: '操作',
     key: 'actions',

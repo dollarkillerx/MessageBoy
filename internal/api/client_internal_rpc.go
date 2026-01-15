@@ -174,7 +174,9 @@ func (m *ClientGetRulesMethod) Execute(ctx context.Context, params json.RawMessa
 		if r.Type == model.ForwardTypeDirect {
 			rule["target_addr"] = r.TargetAddr
 		} else {
-			rule["relay_chain"] = r.RelayChain
+			// 将代理组名称转换为 ID
+			resolvedChain := m.resolveRelayChain(r.RelayChain)
+			rule["relay_chain"] = resolvedChain
 			rule["exit_addr"] = r.ExitAddr
 		}
 		ruleList[i] = rule
@@ -187,6 +189,37 @@ func (m *ClientGetRulesMethod) Execute(ctx context.Context, params json.RawMessa
 }
 
 func (m *ClientGetRulesMethod) RequireAuth() bool { return false }
+
+// resolveRelayChain 将中继链中的代理组名称转换为 ID
+func (m *ClientGetRulesMethod) resolveRelayChain(chain []string) []string {
+	if len(chain) == 0 {
+		return chain
+	}
+
+	resolved := make([]string, len(chain))
+	for i, item := range chain {
+		if storage.IsGroupReference(item) {
+			groupRef := storage.ParseGroupReference(item)
+			// 先尝试按 ID 查找（如果已经是 ID 则直接使用）
+			group, err := m.storage.ProxyGroup.GetByID(groupRef)
+			if err == nil {
+				resolved[i] = "@" + group.ID
+				continue
+			}
+			// 再尝试按名称查找
+			group, err = m.storage.ProxyGroup.GetByName(groupRef)
+			if err == nil {
+				resolved[i] = "@" + group.ID
+				continue
+			}
+			// 找不到则保持原样
+			resolved[i] = item
+		} else {
+			resolved[i] = item
+		}
+	}
+	return resolved
+}
 
 // ClientReportTrafficMethod - Client 上报流量统计
 type ClientReportTrafficMethod struct {
@@ -228,9 +261,6 @@ func (m *ClientReportTrafficMethod) Execute(ctx context.Context, params json.Raw
 		}
 		if report.BytesOut > 0 {
 			m.storage.Traffic.AddBytesOut(report.RuleID, p.ClientID, report.BytesOut)
-		}
-		if report.Connections > 0 {
-			m.storage.Traffic.AddConnections(report.RuleID, p.ClientID, report.Connections)
 		}
 	}
 

@@ -54,7 +54,7 @@ func TestTrafficRepository_Connections(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewTrafficRepository(db)
 
-	// 测试连接计数
+	// 测试活跃连接计数
 	repo.IncrementConn("rule1", "client1")
 	repo.IncrementConn("rule1", "client1")
 	repo.IncrementConn("rule1", "client1")
@@ -63,27 +63,6 @@ func TestTrafficRepository_Connections(t *testing.T) {
 	stats := repo.getOrCreateStats("rule1", "client1")
 	if stats.ActiveConns != 2 {
 		t.Errorf("expected 2 active conns, got %d", stats.ActiveConns)
-	}
-	if stats.TotalConns != 3 {
-		t.Errorf("expected 3 total conns, got %d", stats.TotalConns)
-	}
-}
-
-func TestTrafficRepository_AddConnections(t *testing.T) {
-	db := setupTestDB(t)
-	repo := NewTrafficRepository(db)
-
-	// 测试直接添加连接数（用于 Client 上报）
-	repo.AddConnections("rule1", "client1", 10)
-	repo.AddConnections("rule1", "client1", 5)
-
-	stats := repo.getOrCreateStats("rule1", "client1")
-	if stats.TotalConns != 15 {
-		t.Errorf("expected 15 total conns, got %d", stats.TotalConns)
-	}
-	// AddConnections 不影响 ActiveConns
-	if stats.ActiveConns != 0 {
-		t.Errorf("expected 0 active conns, got %d", stats.ActiveConns)
 	}
 }
 
@@ -138,11 +117,10 @@ func TestTrafficRepository_FlushToDatabase(t *testing.T) {
 	if stats.TotalBytes != 150 {
 		t.Errorf("expected total_bytes 150, got %d", stats.TotalBytes)
 	}
-	// TotalConnections 只存储在内存中，不写入数据库
-	// 验证内存中的 TotalConns
+	// 验证内存中的活跃连接数
 	memStats := repo.getOrCreateStats("rule1", "client1")
-	if memStats.TotalConns != 1 {
-		t.Errorf("expected 1 total connection in memory, got %d", memStats.TotalConns)
+	if memStats.ActiveConns != 1 {
+		t.Errorf("expected 1 active connection in memory, got %d", memStats.ActiveConns)
 	}
 }
 
@@ -183,11 +161,12 @@ func TestTrafficRepository_GetTotalStats(t *testing.T) {
 	// 添加多个规则的流量并刷新
 	repo.AddBytesIn("rule1", "client1", 100)
 	repo.AddBytesOut("rule1", "client1", 50)
-	repo.AddConnections("rule1", "client1", 5)
+	repo.IncrementConn("rule1", "client1")
+	repo.IncrementConn("rule1", "client1")
 
 	repo.AddBytesIn("rule2", "client2", 200)
 	repo.AddBytesOut("rule2", "client2", 100)
-	repo.AddConnections("rule2", "client2", 3)
+	repo.IncrementConn("rule2", "client2")
 
 	err := repo.FlushToDatabase()
 	if err != nil {
@@ -195,7 +174,7 @@ func TestTrafficRepository_GetTotalStats(t *testing.T) {
 	}
 
 	// 获取总计
-	bytesIn, bytesOut, totalConns, err := repo.GetTotalStats()
+	bytesIn, bytesOut, activeConns, err := repo.GetTotalStats()
 	if err != nil {
 		t.Fatalf("failed to get total stats: %v", err)
 	}
@@ -206,8 +185,8 @@ func TestTrafficRepository_GetTotalStats(t *testing.T) {
 	if bytesOut != 150 {
 		t.Errorf("expected total bytes_out 150, got %d", bytesOut)
 	}
-	if totalConns != 8 {
-		t.Errorf("expected 8 total connections, got %d", totalConns)
+	if activeConns != 3 {
+		t.Errorf("expected 3 active connections, got %d", activeConns)
 	}
 }
 
@@ -237,8 +216,8 @@ func TestTrafficRepository_Concurrent(t *testing.T) {
 	if stats.BytesOut != 500 {
 		t.Errorf("expected bytes_out 500, got %d", stats.BytesOut)
 	}
-	if stats.TotalConns != 100 {
-		t.Errorf("expected 100 total conns, got %d", stats.TotalConns)
+	if stats.ActiveConns != 100 {
+		t.Errorf("expected 100 active conns, got %d", stats.ActiveConns)
 	}
 }
 

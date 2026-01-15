@@ -195,7 +195,6 @@ func (r *ProxyGroupRepository) IncrementNodeConns(nodeID string) error {
 	return r.db.Model(&model.ProxyGroupNode{}).Where("id = ?", nodeID).
 		Updates(map[string]interface{}{
 			"active_conns": gorm.Expr("active_conns + 1"),
-			"total_conns":  gorm.Expr("total_conns + 1"),
 			"updated_at":   time.Now(),
 		}).Error
 }

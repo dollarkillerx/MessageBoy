@@ -17,9 +17,8 @@ type TrafficStats struct {
 	TotalBytes int64 `json:"total_bytes" gorm:"default:0"`
 
 	// 连接统计
-	Connections      int64 `json:"connections" gorm:"default:0"`
-	ActiveConns      int   `json:"active_conns" gorm:"default:0"`
-	TotalConnections int64 `json:"total_connections" gorm:"default:0"`
+	Connections int64 `json:"connections" gorm:"default:0"`
+	ActiveConns int   `json:"active_conns" gorm:"default:0"`
 
 	// 时间范围 (用于按时间段统计)
 	PeriodStart time.Time `json:"period_start" gorm:"index"`
@@ -44,9 +43,8 @@ type TrafficSummary struct {
 	BytesOut   int64 `json:"bytes_out"`
 	TotalBytes int64 `json:"total_bytes"`
 
-	Connections      int64 `json:"connections"`
-	ActiveConns      int   `json:"active_conns"`
-	TotalConnections int64 `json:"total_connections"`
+	Connections int64 `json:"connections"`
+	ActiveConns int   `json:"active_conns"`
 
 	// 格式化的流量字符串
 	BytesInStr    string `json:"bytes_in_str"`

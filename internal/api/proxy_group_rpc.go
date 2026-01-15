@@ -152,7 +152,6 @@ func (m *GetProxyGroupListMethod) Execute(ctx context.Context, params json.RawMe
 				"weight":        n.Weight,
 				"status":        n.Status,
 				"active_conns":  n.ActiveConns,
-				"total_conns":   n.TotalConns,
 				"last_check_at": n.LastCheckAt,
 				"created_at":    n.CreatedAt,
 			}
@@ -227,7 +226,6 @@ func (m *GetProxyGroupMethod) Execute(ctx context.Context, params json.RawMessag
 			"weight":        n.Weight,
 			"status":        n.Status,
 			"active_conns":  n.ActiveConns,
-			"total_conns":   n.TotalConns,
 			"last_check_at": n.LastCheckAt,
 			"last_check_ok": n.LastCheckOK,
 			"fail_count":    n.FailCount,

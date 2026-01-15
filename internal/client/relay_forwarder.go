@@ -137,6 +137,7 @@ func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 		Type:     relay.MsgTypeConnect,
 		StreamID: stream.ID,
 		Target:   f.exitAddr,
+		RuleID:   f.id, // 用于服务端流量统计
 	}
 
 	if len(f.relayChain) > 0 {

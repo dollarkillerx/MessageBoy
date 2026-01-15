@@ -75,9 +75,8 @@ type ProxyGroupNode struct {
 	LastCheckOK bool       `json:"last_check_ok"`
 	FailCount   int        `json:"fail_count"`
 
-	// 连接统计
-	ActiveConns int   `json:"active_conns"`
-	TotalConns  int64 `json:"total_conns"`
+	// 连接统计 (仅实时活跃连接)
+	ActiveConns int `json:"active_conns"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

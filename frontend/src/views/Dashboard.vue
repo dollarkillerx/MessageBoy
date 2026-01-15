@@ -37,7 +37,6 @@ const trafficStats = ref<TotalTraffic>({
   bytes_in_str: '0 B',
   bytes_out_str: '0 B',
   total_bytes_str: '0 B',
-  total_connections: 0,
   active_connections: 0
 })
 
@@ -70,19 +69,14 @@ const trafficColumns: DataTableColumns<TrafficSummary> = [
     width: 100
   },
   {
-    title: '活跃',
+    title: '活跃连接',
     key: 'active_conns',
-    width: 80,
+    width: 100,
     render(row) {
       return row.active_conns > 0
         ? h(NTag, { type: 'success', size: 'small' }, () => row.active_conns)
         : h(NTag, { type: 'default', size: 'small' }, () => '0')
     }
-  },
-  {
-    title: '总连接',
-    key: 'total_connections',
-    width: 100
   }
 ]
 
@@ -197,11 +191,7 @@ onUnmounted(() => {
           </NGi>
           <NGi>
             <NCard>
-              <NStatistic label="活跃连接" :value="trafficStats.active_connections">
-                <template #suffix>
-                  <NText depth="3"> / {{ trafficStats.total_connections }} 总计</NText>
-                </template>
-              </NStatistic>
+              <NStatistic label="活跃连接" :value="trafficStats.active_connections" />
             </NCard>
           </NGi>
         </NGrid>

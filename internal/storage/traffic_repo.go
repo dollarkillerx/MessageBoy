@@ -33,8 +33,7 @@ type RealtimeTraffic struct {
 	ClientID    string
 	BytesIn     int64 // 待刷新到数据库的增量
 	BytesOut    int64
-	ActiveConns int32
-	TotalConns  int64
+	ActiveConns int32 // 实时活跃连接数
 
 	// 用于带宽计算的累积值（不会被重置）
 	TotalBytesIn  int64
@@ -93,23 +92,16 @@ func (r *TrafficRepository) AddBytesOut(ruleID, clientID string, bytes int64) {
 	atomic.AddInt64(&stats.TotalBytesOut, bytes) // 累积值用于带宽计算
 }
 
-// IncrementConn 增加连接数 (只在内存中统计，不持久化)
+// IncrementConn 增加活跃连接数
 func (r *TrafficRepository) IncrementConn(ruleID, clientID string) {
 	stats := r.getOrCreateStats(ruleID, clientID)
 	atomic.AddInt32(&stats.ActiveConns, 1)
-	atomic.AddInt64(&stats.TotalConns, 1) // 内存中累计，不写入数据库
 }
 
 // DecrementConn 减少活跃连接数
 func (r *TrafficRepository) DecrementConn(ruleID, clientID string) {
 	stats := r.getOrCreateStats(ruleID, clientID)
 	atomic.AddInt32(&stats.ActiveConns, -1)
-}
-
-// AddConnections 添加连接数 (用于 Client 上报)
-func (r *TrafficRepository) AddConnections(ruleID, clientID string, count int64) {
-	stats := r.getOrCreateStats(ruleID, clientID)
-	atomic.AddInt64(&stats.TotalConns, count)
 }
 
 // FlushToDatabase 将内存统计刷新到数据库 (只刷新流量，连接数保留在内存)
@@ -237,11 +229,10 @@ func (r *TrafficRepository) GetSummaryByRule() ([]model.TrafficSummary, error) {
 			TotalBytesStr: model.FormatBytes(res.TotalBytes),
 		}
 
-		// 从内存获取实时连接数
+		// 从内存获取实时活跃连接数
 		key := res.RuleID + ":" + res.ClientID
 		if stats, ok := r.realtimeStats[key]; ok {
 			summary.ActiveConns = int(atomic.LoadInt32(&stats.ActiveConns))
-			summary.TotalConnections = atomic.LoadInt64(&stats.TotalConns)
 		}
 
 		summaries = append(summaries, summary)
@@ -259,8 +250,8 @@ func (r *TrafficRepository) GetTodayStats() ([]model.TrafficStats, error) {
 	return stats, err
 }
 
-// GetTotalStats 获取总流量统计 (totalConns 从内存获取)
-func (r *TrafficRepository) GetTotalStats() (bytesIn, bytesOut, totalConns int64, err error) {
+// GetTotalStats 获取总流量统计和实时活跃连接数
+func (r *TrafficRepository) GetTotalStats() (bytesIn, bytesOut int64, activeConns int, err error) {
 	var result struct {
 		BytesIn  int64
 		BytesOut int64
@@ -274,14 +265,10 @@ func (r *TrafficRepository) GetTotalStats() (bytesIn, bytesOut, totalConns int64
 		return 0, 0, 0, err
 	}
 
-	// 从内存获取总连接数
-	r.mu.RLock()
-	for _, stats := range r.realtimeStats {
-		totalConns += atomic.LoadInt64(&stats.TotalConns)
-	}
-	r.mu.RUnlock()
+	// 从内存获取实时活跃连接数
+	activeConns = r.GetRealtimeActiveConns()
 
-	return result.BytesIn, result.BytesOut, totalConns, nil
+	return result.BytesIn, result.BytesOut, activeConns, nil
 }
 
 // GetRealtimeActiveConns 获取实时活跃连接总数

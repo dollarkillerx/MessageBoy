@@ -61,7 +61,6 @@ export interface ProxyGroupNode {
   weight: number
   status: NodeStatus
   active_conns: number
-  total_conns: number
   last_check_at: string
   created_at: string
 }
@@ -75,9 +74,7 @@ export interface TrafficSummary {
   bytes_in: number
   bytes_out: number
   total_bytes: number
-  connections: number
   active_conns: number
-  total_connections: number
   bytes_in_str: string
   bytes_out_str: string
   total_bytes_str: string
@@ -90,7 +87,6 @@ export interface TotalTraffic {
   bytes_in_str: string
   bytes_out_str: string
   total_bytes_str: string
-  total_connections: number
   active_connections: number
 }
 

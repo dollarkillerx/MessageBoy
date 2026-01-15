@@ -78,11 +78,10 @@ func (m *GetTodayTrafficMethod) Execute(ctx context.Context, params json.RawMess
 		return nil, err
 	}
 
-	var bytesIn, bytesOut, totalConns int64
+	var bytesIn, bytesOut int64
 	for _, s := range stats {
 		bytesIn += s.BytesIn
 		bytesOut += s.BytesOut
-		totalConns += s.TotalConnections
 	}
 
 	activeConns := m.storage.Traffic.GetRealtimeActiveConns()
@@ -94,7 +93,6 @@ func (m *GetTodayTrafficMethod) Execute(ctx context.Context, params json.RawMess
 		"bytes_in_str":       model.FormatBytes(bytesIn),
 		"bytes_out_str":      model.FormatBytes(bytesOut),
 		"total_bytes_str":    model.FormatBytes(bytesIn + bytesOut),
-		"total_connections":  totalConns,
 		"active_connections": activeConns,
 	}, nil
 }

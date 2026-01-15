@@ -276,7 +276,6 @@ func TestProxyGroupNodeStatus(t *testing.T) {
 		ClientID:    "client-1",
 		Status:      model.NodeStatusHealthy,
 		ActiveConns: 5,
-		TotalConns:  100,
 	}
 
 	if node.Status != model.NodeStatusHealthy {

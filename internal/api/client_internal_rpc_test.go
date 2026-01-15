@@ -150,16 +150,14 @@ func TestClientReportTrafficMethod_Execute_Success(t *testing.T) {
 		ClientID: "client1",
 		Reports: []TrafficReportItem{
 			{
-				RuleID:      "rule1",
-				BytesIn:     100,
-				BytesOut:    50,
-				Connections: 5,
+				RuleID:   "rule1",
+				BytesIn:  100,
+				BytesOut: 50,
 			},
 			{
-				RuleID:      "rule2",
-				BytesIn:     200,
-				BytesOut:    100,
-				Connections: 3,
+				RuleID:   "rule2",
+				BytesIn:  200,
+				BytesOut: 100,
 			},
 		},
 	}
@@ -187,7 +185,7 @@ func TestClientReportTrafficMethod_Execute_Success(t *testing.T) {
 		t.Fatalf("flush failed: %v", err)
 	}
 
-	bytesIn, bytesOut, totalConns, err := store.Traffic.GetTotalStats()
+	bytesIn, bytesOut, _, err := store.Traffic.GetTotalStats()
 	if err != nil {
 		t.Fatalf("failed to get total stats: %v", err)
 	}
@@ -197,9 +195,6 @@ func TestClientReportTrafficMethod_Execute_Success(t *testing.T) {
 	}
 	if bytesOut != 150 {
 		t.Errorf("expected total bytes_out 150, got %d", bytesOut)
-	}
-	if totalConns != 8 {
-		t.Errorf("expected 8 total connections, got %d", totalConns)
 	}
 }
 
@@ -310,7 +305,7 @@ func TestClientReportTrafficMethod_Execute_MultipleReportsAccumulate(t *testing.
 	params1 := ClientReportTrafficParams{
 		ClientID: "client1",
 		Reports: []TrafficReportItem{
-			{RuleID: "rule1", BytesIn: 100, BytesOut: 50, Connections: 2},
+			{RuleID: "rule1", BytesIn: 100, BytesOut: 50},
 		},
 	}
 	paramsJSON1, _ := json.Marshal(params1)
@@ -320,7 +315,7 @@ func TestClientReportTrafficMethod_Execute_MultipleReportsAccumulate(t *testing.
 	params2 := ClientReportTrafficParams{
 		ClientID: "client1",
 		Reports: []TrafficReportItem{
-			{RuleID: "rule1", BytesIn: 200, BytesOut: 100, Connections: 3},
+			{RuleID: "rule1", BytesIn: 200, BytesOut: 100},
 		},
 	}
 	paramsJSON2, _ := json.Marshal(params2)
@@ -329,15 +324,12 @@ func TestClientReportTrafficMethod_Execute_MultipleReportsAccumulate(t *testing.
 	// 刷新并验证累加
 	store.Traffic.FlushToDatabase()
 
-	bytesIn, bytesOut, totalConns, _ := store.Traffic.GetTotalStats()
+	bytesIn, bytesOut, _, _ := store.Traffic.GetTotalStats()
 	if bytesIn != 300 {
 		t.Errorf("expected accumulated bytes_in 300, got %d", bytesIn)
 	}
 	if bytesOut != 150 {
 		t.Errorf("expected accumulated bytes_out 150, got %d", bytesOut)
-	}
-	if totalConns != 5 {
-		t.Errorf("expected accumulated connections 5, got %d", totalConns)
 	}
 }
 
