@@ -14,6 +14,9 @@ import (
 const (
 	// AES-GCM Nonce 大小
 	nonceSize = 12
+	// 中继数据加密共享密钥 (32字节 = 64位十六进制)
+	// 所有客户端使用相同密钥，以便中继场景下互相解密
+	relaySharedKey = "a]T#k9$mP2vL8nQ5wX1cZ7bY4dF6gH3j"
 )
 
 // WSClientConn WebSocket 客户端连接
@@ -21,7 +24,6 @@ type WSClientConn struct {
 	endpoint  string
 	clientID  string
 	secretKey string
-	crypto    *crypto.AESCrypto
 
 	conn    *websocket.Conn
 	sendCh  chan *sendItem
@@ -34,6 +36,17 @@ type WSClientConn struct {
 	reconnect bool
 }
 
+// 全局共享加密器 (用于中继数据加密)
+var sharedCrypto *crypto.AESCrypto
+
+func init() {
+	var err error
+	sharedCrypto, err = crypto.NewAESCrypto([]byte(relaySharedKey))
+	if err != nil {
+		panic("failed to init shared crypto: " + err.Error())
+	}
+}
+
 // sendItem 发送队列项
 type sendItem struct {
 	buf  *[]byte // 来自 pool
@@ -42,16 +55,10 @@ type sendItem struct {
 
 // NewWSClientConn 创建 WebSocket 客户端连接
 func NewWSClientConn(endpoint, clientID, secretKey string) (*WSClientConn, error) {
-	aes, err := crypto.NewAESCryptoFromHex(secretKey)
-	if err != nil {
-		return nil, err
-	}
-
 	return &WSClientConn{
 		endpoint:  endpoint,
 		clientID:  clientID,
 		secretKey: secretKey,
-		crypto:    aes,
 		sendCh:    make(chan *sendItem, 512),
 		recvCh:    make(chan *TunnelMessage, 512),
 		closeCh:   make(chan struct{}),
@@ -117,11 +124,11 @@ func (c *WSClientConn) readPump() {
 			continue
 		}
 
-		// 解密 payload（如果有）
+		// 使用共享密钥解密 Data 类型的 payload
 		if len(msg.Payload) > nonceSize && msg.Type == MsgTypeData {
 			nonce := msg.Payload[:nonceSize]
 			ciphertext := msg.Payload[nonceSize:]
-			decrypted, err := c.crypto.Decrypt(ciphertext, nonce)
+			decrypted, err := sharedCrypto.Decrypt(ciphertext, nonce)
 			if err != nil {
 				log.Warn().Err(err).Msg("Failed to decrypt payload")
 				continue
@@ -204,16 +211,14 @@ func (c *WSClientConn) reconnectLoop() {
 func (c *WSClientConn) Send(msg *TunnelMessage) error {
 	buf := GetBuffer()
 
-	// 如果是 Data 类型且有 payload，需要加密
+	// 使用共享密钥加密 Data 类型的 payload
 	if msg.Type == MsgTypeData && len(msg.Payload) > 0 {
-		// 加密后的格式: Nonce(12B) + CipherText
-		ciphertext, nonce, err := c.crypto.Encrypt(msg.Payload)
+		ciphertext, nonce, err := sharedCrypto.Encrypt(msg.Payload)
 		if err != nil {
 			PutBuffer(buf)
 			return err
 		}
-
-		// 创建新的 payload: nonce + ciphertext
+		// 格式: Nonce(12B) + CipherText
 		encryptedPayload := make([]byte, nonceSize+len(ciphertext))
 		copy(encryptedPayload[:nonceSize], nonce)
 		copy(encryptedPayload[nonceSize:], ciphertext)

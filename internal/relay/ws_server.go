@@ -295,6 +295,13 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 		log.Warn().Str("target", targetClientID).Msg("Failed to send to target client")
 		s.sendError(sourceClientID, msg.StreamID, "failed to send to target")
 		s.cleanupRoute(msg.StreamID)
+	} else {
+		log.Debug().
+			Str("source", sourceClientID).
+			Str("target", targetClientID).
+			Str("exit_addr", msg.Target).
+			Uint32("stream_id", msg.StreamID).
+			Msg("Connect forwarded to target client")
 	}
 }
 
@@ -343,7 +350,18 @@ func (s *WSServer) handleConnAck(fromClientID string, msg *TunnelMessage) {
 	}
 
 	// 转发到源 Client（零拷贝）
-	s.SendMsgToClient(route.SourceClientID, msg)
+	if !s.SendMsgToClient(route.SourceClientID, msg) {
+		log.Warn().
+			Str("source_client", route.SourceClientID).
+			Uint32("stream_id", msg.StreamID).
+			Msg("Failed to send ConnAck to source client")
+	} else {
+		log.Debug().
+			Str("from", fromClientID).
+			Str("to", route.SourceClientID).
+			Uint32("stream_id", msg.StreamID).
+			Msg("ConnAck forwarded")
+	}
 }
 
 // handleData 处理数据消息 - 双向路由
@@ -437,7 +455,19 @@ func (s *WSServer) handleError(fromClientID string, msg *TunnelMessage) {
 		targetClientID = route.SourceClientID
 	}
 
-	s.SendMsgToClient(targetClientID, msg)
+	log.Debug().
+		Str("from", fromClientID).
+		Str("to", targetClientID).
+		Uint32("stream_id", msg.StreamID).
+		Str("error", msg.Error).
+		Msg("Forwarding error message")
+
+	if !s.SendMsgToClient(targetClientID, msg) {
+		log.Warn().
+			Str("target", targetClientID).
+			Uint32("stream_id", msg.StreamID).
+			Msg("Failed to forward error message")
+	}
 
 	// 清理路由 (包括减少节点连接计数)
 	s.cleanupRoute(msg.StreamID)

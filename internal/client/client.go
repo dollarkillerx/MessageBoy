@@ -219,7 +219,10 @@ func (c *Client) handleTunnelMessages() {
 			// 连接确认，通知等待的 stream
 			stream := c.wsConn.GetStreams().GetStream(msg.StreamID)
 			if stream != nil {
+				log.Debug().Uint32("stream_id", msg.StreamID).Msg("Received ConnAck, notifying stream")
 				stream.Write([]byte{relay.MsgTypeConnAck})
+			} else {
+				log.Warn().Uint32("stream_id", msg.StreamID).Msg("Received ConnAck but stream not found")
 			}
 
 		case relay.MsgTypeData:
@@ -235,10 +238,16 @@ func (c *Client) handleTunnelMessages() {
 
 		case relay.MsgTypeError:
 			// 错误消息，通知等待的 stream
+			log.Debug().
+				Uint32("stream_id", msg.StreamID).
+				Str("error", msg.Error).
+				Msg("Received error message")
 			stream := c.wsConn.GetStreams().GetStream(msg.StreamID)
 			if stream != nil {
 				stream.Write([]byte{relay.MsgTypeError})
 				stream.Close()
+			} else {
+				log.Warn().Uint32("stream_id", msg.StreamID).Msg("Received Error but stream not found")
 			}
 
 		case relay.MsgTypeRuleUpdate:
@@ -301,10 +310,14 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 		StreamID: msg.StreamID,
 	}
 	if err := c.wsConn.Send(ackMsg); err != nil {
+		log.Warn().Err(err).Uint32("stream_id", msg.StreamID).Msg("Failed to send ConnAck")
 		return
 	}
 
-	log.Debug().Uint32("stream_id", msg.StreamID).Msg("Tunnel connected to target")
+	log.Debug().
+		Uint32("stream_id", msg.StreamID).
+		Str("target", target).
+		Msg("ConnAck sent, tunnel connected to target")
 
 	// 双向转发（使用 buffer pool 优化）
 	done := make(chan struct{}, 2)

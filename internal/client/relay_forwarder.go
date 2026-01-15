@@ -175,7 +175,12 @@ func (f *RelayForwarder) waitForConnAck(stream *relay.Stream) bool {
 	for {
 		select {
 		case <-timeout:
-			log.Warn().Uint32("stream_id", stream.ID).Msg("Connect timeout")
+			log.Warn().
+				Uint32("stream_id", stream.ID).
+				Str("exit_addr", f.exitAddr).
+				Strs("relay_chain", f.relayChain).
+				Int("timeout_seconds", f.cfg.ConnectTimeout).
+				Msg("Connect timeout")
 			return false
 		case <-stream.CloseCh:
 			return false
@@ -184,7 +189,11 @@ func (f *RelayForwarder) waitForConnAck(stream *relay.Stream) bool {
 			if len(data) == 1 && data[0] == relay.MsgTypeConnAck {
 				return true
 			} else if len(data) == 1 && data[0] == relay.MsgTypeError {
-				log.Warn().Uint32("stream_id", stream.ID).Msg("Connect rejected")
+				log.Warn().
+					Uint32("stream_id", stream.ID).
+					Str("exit_addr", f.exitAddr).
+					Strs("relay_chain", f.relayChain).
+					Msg("Connect rejected")
 				return false
 			}
 		}
