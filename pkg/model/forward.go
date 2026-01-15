@@ -18,7 +18,7 @@ type StringSlice []string
 
 func (s StringSlice) Value() (driver.Value, error) {
 	if s == nil {
-		return nil, nil
+		return "[]", nil
 	}
 	return json.Marshal(s)
 }
@@ -28,32 +28,37 @@ func (s *StringSlice) Scan(value interface{}) error {
 		*s = nil
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
 		return fmt.Errorf("failed to scan StringSlice: %v", value)
 	}
 	return json.Unmarshal(bytes, s)
 }
 
 func (StringSlice) GormDataType() string {
-	return "jsonb"
+	return "text"
 }
 
 type ForwardRule struct {
-	ID      string      `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	Name    string      `json:"name" gorm:"type:varchar(100);not null"`
-	Type    ForwardType `json:"type" gorm:"type:varchar(20);not null"`
-	Enabled bool        `json:"enabled" gorm:"default:true"`
+	ID      string      `json:"id" gorm:"primaryKey;size:36"`
+	Name    string      `json:"name" gorm:"size:100;not null"`
+	Type    ForwardType `json:"type" gorm:"size:20;not null"`
+	Enabled bool        `json:"enabled"`
 
-	ListenAddr   string `json:"listen_addr" gorm:"type:varchar(100);not null"`
-	ListenClient string `json:"listen_client" gorm:"type:varchar(36);not null"`
+	ListenAddr   string `json:"listen_addr" gorm:"size:100;not null"`
+	ListenClient string `json:"listen_client" gorm:"size:36;not null;index"`
 
 	// 直接转发
-	TargetAddr string `json:"target_addr,omitempty" gorm:"type:varchar(255)"`
+	TargetAddr string `json:"target_addr,omitempty" gorm:"size:255"`
 
 	// 中继转发
-	RelayChain StringSlice `json:"relay_chain,omitempty" gorm:"type:jsonb"`
-	ExitAddr   string      `json:"exit_addr,omitempty" gorm:"type:varchar(255)"`
+	RelayChain StringSlice `json:"relay_chain,omitempty" gorm:"type:text"`
+	ExitAddr   string      `json:"exit_addr,omitempty" gorm:"size:255"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -61,4 +66,11 @@ type ForwardRule struct {
 
 func (ForwardRule) TableName() string {
 	return "forward_rules"
+}
+
+// SetDefaults 设置默认值
+func (r *ForwardRule) SetDefaults() {
+	if r.Type == "" {
+		r.Type = ForwardTypeDirect
+	}
 }

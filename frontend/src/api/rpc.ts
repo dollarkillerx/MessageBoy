@@ -35,14 +35,22 @@ export const adminLogin = (username: string, password: string) =>
   rpcCall<{ token: string }>('adminLogin', { username, password })
 
 // Clients
-export const getClientList = () =>
-  rpcCall<import('../types').Client[]>('getClientList', {})
+export const getClientList = async () => {
+  const result = await rpcCall<{ clients: import('../types').Client[] }>('getClientList', {})
+  return result.clients || []
+}
 
 export const getClient = (id: string) =>
   rpcCall<import('../types').Client>('getClient', { id })
 
-export const createClient = (name: string) =>
-  rpcCall<import('../types').Client>('createClient', { name })
+export const createClient = (params: {
+  name: string
+  ssh_host?: string
+  ssh_port?: number
+  ssh_user?: string
+  ssh_password?: string
+}) =>
+  rpcCall<import('../types').Client>('createClient', params)
 
 export const updateClient = (id: string, name: string) =>
   rpcCall<import('../types').Client>('updateClient', { id, name })
@@ -53,12 +61,16 @@ export const deleteClient = (id: string) =>
 export const regenerateClientToken = (id: string) =>
   rpcCall<import('../types').Client>('regenerateClientToken', { id })
 
-export const getClientInstallCommand = (id: string) =>
-  rpcCall<{ command: string }>('getClientInstallCommand', { id })
+export const getClientInstallCommand = async (id: string) => {
+  const result = await rpcCall<{ install_command: string; manual_command: string }>('getClientInstallCommand', { id })
+  return { command: result.install_command, manualCommand: result.manual_command }
+}
 
 // Forward Rules
-export const getForwardRuleList = () =>
-  rpcCall<import('../types').ForwardRule[]>('getForwardRuleList', {})
+export const getForwardRuleList = async () => {
+  const result = await rpcCall<{ rules: import('../types').ForwardRule[] }>('getForwardRuleList', {})
+  return result.rules || []
+}
 
 export const getForwardRule = (id: string) =>
   rpcCall<import('../types').ForwardRule>('getForwardRule', { id })
@@ -76,8 +88,10 @@ export const toggleForwardRule = (id: string, enabled: boolean) =>
   rpcCall<import('../types').ForwardRule>('toggleForwardRule', { id, enabled })
 
 // Proxy Groups
-export const getProxyGroupList = () =>
-  rpcCall<import('../types').ProxyGroup[]>('getProxyGroupList', {})
+export const getProxyGroupList = async () => {
+  const result = await rpcCall<{ groups: import('../types').ProxyGroup[] }>('getProxyGroupList', {})
+  return result.groups || []
+}
 
 export const getProxyGroup = (id: string) =>
   rpcCall<import('../types').ProxyGroup>('getProxyGroup', { id })

@@ -21,6 +21,7 @@ type ApiServer struct {
 	rpcHandler   *RpcHandler
 	wsServer     *relay.WSServer
 	loadBalancer *proxy.LoadBalancer
+	webSSH       *WebSSHHandler
 	engine       *gin.Engine
 }
 
@@ -48,6 +49,7 @@ func NewApiServer(cfg *conf.Config, storage *storage.Storage) *ApiServer {
 	jwtManager := middleware.NewJWTManager(&cfg.JWT)
 	rpcHandler := NewRpcHandler(jwtManager)
 	wsServer := relay.NewWSServer()
+	webSSH := NewWebSSHHandler(storage, jwtManager)
 
 	server := &ApiServer{
 		cfg:        cfg,
@@ -55,6 +57,7 @@ func NewApiServer(cfg *conf.Config, storage *storage.Storage) *ApiServer {
 		jwtManager: jwtManager,
 		rpcHandler: rpcHandler,
 		wsServer:   wsServer,
+		webSSH:     webSSH,
 		engine:     gin.New(),
 	}
 
@@ -75,6 +78,7 @@ func (s *ApiServer) setupRoutes() {
 	s.engine.GET("/health", s.healthCheck)
 	s.engine.POST("/api/rpc", s.rpcHandler.Handle)
 	s.engine.GET(s.cfg.WebSocket.Endpoint, s.handleWebSocket)
+	s.engine.GET("/api/ws/ssh/:clientId", s.webSSH.Handle)
 }
 
 func (s *ApiServer) handleWebSocket(c *gin.Context) {

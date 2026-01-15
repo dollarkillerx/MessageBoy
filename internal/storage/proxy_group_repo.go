@@ -83,23 +83,70 @@ func (r *ProxyGroupRepository) AddNode(node *model.ProxyGroupNode) error {
 
 func (r *ProxyGroupRepository) GetNode(id string) (*model.ProxyGroupNode, error) {
 	var node model.ProxyGroupNode
-	err := r.db.Preload("Client").First(&node, "id = ?", id).Error
-	return &node, err
+	if err := r.db.First(&node, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	// 手动加载 Client
+	if node.ClientID != "" {
+		var client model.Client
+		if err := r.db.First(&client, "id = ?", node.ClientID).Error; err == nil {
+			node.Client = &client
+		}
+	}
+	return &node, nil
 }
 
 func (r *ProxyGroupRepository) GetNodesByGroupID(groupID string) ([]model.ProxyGroupNode, error) {
 	var nodes []model.ProxyGroupNode
-	err := r.db.Preload("Client").Where("group_id = ?", groupID).Order("priority ASC, created_at ASC").Find(&nodes).Error
-	return nodes, err
+	if err := r.db.Where("group_id = ?", groupID).Order("priority ASC, created_at ASC").Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	// 手动加载 Clients
+	r.loadClientsForNodes(nodes)
+	return nodes, nil
 }
 
 func (r *ProxyGroupRepository) GetHealthyNodesByGroupID(groupID string) ([]model.ProxyGroupNode, error) {
 	var nodes []model.ProxyGroupNode
-	err := r.db.Preload("Client").
-		Where("group_id = ? AND status = ?", groupID, model.NodeStatusHealthy).
+	if err := r.db.Where("group_id = ? AND status = ?", groupID, model.NodeStatusHealthy).
 		Order("priority ASC, active_conns ASC").
-		Find(&nodes).Error
-	return nodes, err
+		Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	// 手动加载 Clients
+	r.loadClientsForNodes(nodes)
+	return nodes, nil
+}
+
+// loadClientsForNodes 批量加载节点关联的 Client
+func (r *ProxyGroupRepository) loadClientsForNodes(nodes []model.ProxyGroupNode) {
+	if len(nodes) == 0 {
+		return
+	}
+	// 收集所有 ClientID
+	clientIDs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if n.ClientID != "" {
+			clientIDs = append(clientIDs, n.ClientID)
+		}
+	}
+	if len(clientIDs) == 0 {
+		return
+	}
+	// 批量查询 Clients
+	var clients []model.Client
+	r.db.Where("id IN ?", clientIDs).Find(&clients)
+	// 建立 ID -> Client 映射
+	clientMap := make(map[string]*model.Client)
+	for i := range clients {
+		clientMap[clients[i].ID] = &clients[i]
+	}
+	// 填充到 nodes
+	for i := range nodes {
+		if c, ok := clientMap[nodes[i].ClientID]; ok {
+			nodes[i].Client = c
+		}
+	}
 }
 
 func (r *ProxyGroupRepository) UpdateNode(node *model.ProxyGroupNode) error {

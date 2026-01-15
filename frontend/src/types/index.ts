@@ -2,11 +2,18 @@
 export interface Client {
   id: string
   name: string
-  token: string
+  token?: string
   status: 'online' | 'offline'
-  last_seen_at: string
+  last_ip?: string
+  last_seen?: string
+  hostname?: string
+  version?: string
+  ssh_host?: string
+  ssh_port?: number
+  ssh_user?: string
+  ssh_password?: string
   created_at: string
-  updated_at: string
+  updated_at?: string
 }
 
 // Forward Rule types

@@ -34,6 +34,7 @@ type CreateClientParams struct {
 	SSHHost     string `json:"ssh_host"`
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
+	SSHPassword string `json:"ssh_password"`
 	SSHKeyPath  string `json:"ssh_key_path"`
 }
 
@@ -57,6 +58,7 @@ func (m *CreateClientMethod) Execute(ctx context.Context, params json.RawMessage
 		SSHHost:     p.SSHHost,
 		SSHPort:     p.SSHPort,
 		SSHUser:     p.SSHUser,
+		SSHPassword: p.SSHPassword,
 		SSHKeyPath:  p.SSHKeyPath,
 		Token:       token,
 		SecretKey:   secretKey,
@@ -141,6 +143,9 @@ func (m *GetClientListMethod) Execute(ctx context.Context, params json.RawMessag
 			"last_seen":  c.LastSeen,
 			"hostname":   c.Hostname,
 			"version":    c.Version,
+			"ssh_host":   c.SSHHost,
+			"ssh_port":   c.SSHPort,
+			"ssh_user":   c.SSHUser,
 			"created_at": c.CreatedAt,
 		}
 	}
@@ -227,6 +232,7 @@ type UpdateClientParams struct {
 	SSHHost     *string `json:"ssh_host"`
 	SSHPort     *int    `json:"ssh_port"`
 	SSHUser     *string `json:"ssh_user"`
+	SSHPassword *string `json:"ssh_password"`
 	SSHKeyPath  *string `json:"ssh_key_path"`
 }
 
@@ -262,6 +268,9 @@ func (m *UpdateClientMethod) Execute(ctx context.Context, params json.RawMessage
 	}
 	if p.SSHUser != nil {
 		client.SSHUser = *p.SSHUser
+	}
+	if p.SSHPassword != nil {
+		client.SSHPassword = *p.SSHPassword
 	}
 	if p.SSHKeyPath != nil {
 		client.SSHKeyPath = *p.SSHKeyPath
