@@ -90,6 +90,16 @@ func (f *Forwarder) Stop() {
 	f.wg.Wait()
 }
 
+// GetConfigHash 返回配置的哈希值，用于比较配置是否变化
+func (f *Forwarder) GetConfigHash() string {
+	return "direct:" + f.listenAddr + ":" + f.targetAddr
+}
+
+// GetListenAddr 返回监听地址
+func (f *Forwarder) GetListenAddr() string {
+	return f.listenAddr
+}
+
 func (f *Forwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()

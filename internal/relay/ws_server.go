@@ -3,6 +3,7 @@ package relay
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
@@ -29,6 +30,12 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// PortCheckResult 端口检查结果
+type PortCheckResult struct {
+	Available bool
+	Error     string
+}
+
 type WSServer struct {
 	clients map[string]*WSClient
 	mu      sync.RWMutex
@@ -42,6 +49,11 @@ type WSServer struct {
 
 	// 流量统计器
 	trafficCounter TrafficCounterInterface
+
+	// 端口检查等待队列: streamID -> result channel
+	pendingPortChecks   map[uint32]chan *PortCheckResult
+	pendingPortChecksMu sync.RWMutex
+	portCheckNextID     uint32
 }
 
 // RouteInfo 中继路由信息
@@ -75,8 +87,9 @@ type WSClient struct {
 
 func NewWSServer() *WSServer {
 	return &WSServer{
-		clients: make(map[string]*WSClient),
-		routes:  make(map[uint32]*RouteInfo),
+		clients:           make(map[string]*WSClient),
+		routes:            make(map[uint32]*RouteInfo),
+		pendingPortChecks: make(map[uint32]chan *PortCheckResult),
 	}
 }
 
@@ -182,6 +195,9 @@ func (c *WSClient) readPump(server *WSServer) {
 
 		case MsgTypeError:
 			server.handleError(c.ID, msg)
+
+		case MsgTypeCheckPortResult:
+			server.HandlePortCheckResult(msg)
 		}
 	}
 }
@@ -442,14 +458,46 @@ func (s *WSServer) sendError(clientID string, streamID uint32, errMsg string) {
 
 // NotifyRuleUpdate 通知 Client 规则已更新
 func (s *WSServer) NotifyRuleUpdate(clientID string) bool {
+	log.Info().Str("client_id", clientID).Msg("=== NotifyRuleUpdate called ===")
+
 	msg := &TunnelMessage{
 		Type: MsgTypeRuleUpdate,
 	}
 	data, err := msg.Marshal()
 	if err != nil {
+		log.Error().Err(err).Str("client_id", clientID).Msg("Failed to marshal rule update message")
 		return false
 	}
-	return s.SendToClient(clientID, data)
+
+	log.Info().Str("client_id", clientID).Int("data_len", len(data)).Msg("Message marshaled successfully")
+
+	// 列出所有已连接的客户端
+	s.mu.RLock()
+	connectedIDs := make([]string, 0, len(s.clients))
+	for id := range s.clients {
+		connectedIDs = append(connectedIDs, id)
+	}
+	clientCount := len(s.clients)
+	targetClient := s.clients[clientID]
+	s.mu.RUnlock()
+
+	log.Info().
+		Strs("connected_clients", connectedIDs).
+		Int("client_count", clientCount).
+		Str("target_client", clientID).
+		Bool("target_found", targetClient != nil).
+		Msg("Checking connected clients")
+
+	ok := s.SendToClient(clientID, data)
+	if ok {
+		log.Info().Str("client_id", clientID).Msg("✓ Rule update notification sent successfully")
+	} else {
+		log.Warn().
+			Str("client_id", clientID).
+			Strs("connected_clients", connectedIDs).
+			Msg("✗ Failed to send rule update notification (client not connected?)")
+	}
+	return ok
 }
 
 // NotifyRuleUpdateToAll 通知所有 Client 规则已更新
@@ -477,6 +525,92 @@ func (s *WSServer) NotifyRuleUpdateToAll() {
 // IsClientOnline 检查 Client 是否在线
 func (s *WSServer) IsClientOnline(clientID string) bool {
 	return s.GetClient(clientID) != nil
+}
+
+// CheckPortAvailable 检查 Client 上的端口是否可用
+// 返回 (是否可用, 错误信息)
+func (s *WSServer) CheckPortAvailable(clientID string, addr string, currentRuleID string, timeout time.Duration) (bool, string) {
+	log.Info().
+		Str("client_id", clientID).
+		Str("addr", addr).
+		Str("current_rule_id", currentRuleID).
+		Msg("=== CheckPortAvailable called ===")
+
+	// 检查 client 是否在线
+	if !s.IsClientOnline(clientID) {
+		return false, "客户端不在线"
+	}
+
+	// 生成唯一的请求 ID
+	s.pendingPortChecksMu.Lock()
+	s.portCheckNextID++
+	requestID := s.portCheckNextID
+	resultCh := make(chan *PortCheckResult, 1)
+	s.pendingPortChecks[requestID] = resultCh
+	s.pendingPortChecksMu.Unlock()
+
+	// 清理函数
+	defer func() {
+		s.pendingPortChecksMu.Lock()
+		delete(s.pendingPortChecks, requestID)
+		s.pendingPortChecksMu.Unlock()
+	}()
+
+	// 发送检查请求
+	msg := &TunnelMessage{
+		Type:     MsgTypeCheckPort,
+		StreamID: requestID,
+		Target:   addr,
+		RuleID:   currentRuleID, // 传递当前规则 ID，client 可以跳过自己正在监听的端口
+	}
+	data, err := msg.Marshal()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal check port message")
+		return false, "内部错误"
+	}
+
+	if !s.SendToClient(clientID, data) {
+		return false, "无法发送请求到客户端"
+	}
+
+	log.Info().Uint32("request_id", requestID).Str("addr", addr).Msg("Port check request sent, waiting for response")
+
+	// 等待响应
+	select {
+	case result := <-resultCh:
+		log.Info().
+			Uint32("request_id", requestID).
+			Bool("available", result.Available).
+			Str("error", result.Error).
+			Msg("Port check result received")
+		return result.Available, result.Error
+	case <-time.After(timeout):
+		log.Warn().Uint32("request_id", requestID).Msg("Port check timeout")
+		return false, "检查超时，客户端可能无响应"
+	}
+}
+
+// HandlePortCheckResult 处理端口检查结果
+func (s *WSServer) HandlePortCheckResult(msg *TunnelMessage) {
+	s.pendingPortChecksMu.RLock()
+	resultCh, exists := s.pendingPortChecks[msg.StreamID]
+	s.pendingPortChecksMu.RUnlock()
+
+	if !exists {
+		log.Warn().Uint32("request_id", msg.StreamID).Msg("Received port check result for unknown request")
+		return
+	}
+
+	result := &PortCheckResult{
+		Available: msg.Error == "",
+		Error:     msg.Error,
+	}
+
+	select {
+	case resultCh <- result:
+	default:
+		log.Warn().Uint32("request_id", msg.StreamID).Msg("Port check result channel full")
+	}
 }
 
 func (c *WSClient) writePump() {

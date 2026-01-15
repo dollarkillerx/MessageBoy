@@ -8,12 +8,14 @@ import (
 
 // 消息类型
 const (
-	MsgTypeConnect    byte = 0x01
-	MsgTypeConnAck    byte = 0x02
-	MsgTypeData       byte = 0x03
-	MsgTypeClose      byte = 0x04
-	MsgTypeError      byte = 0x05
-	MsgTypeRuleUpdate byte = 0x06 // 规则更新通知
+	MsgTypeConnect         byte = 0x01
+	MsgTypeConnAck         byte = 0x02
+	MsgTypeData            byte = 0x03
+	MsgTypeClose           byte = 0x04
+	MsgTypeError           byte = 0x05
+	MsgTypeRuleUpdate      byte = 0x06 // 规则更新通知
+	MsgTypeCheckPort       byte = 0x07 // 端口检查请求
+	MsgTypeCheckPortResult byte = 0x08 // 端口检查结果
 )
 
 type TunnelMessage struct {

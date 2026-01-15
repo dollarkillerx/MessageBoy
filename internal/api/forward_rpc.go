@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
 	"github.com/dollarkillerx/MessageBoy/internal/relay"
@@ -276,10 +278,14 @@ type UpdateForwardRuleParams struct {
 }
 
 func (m *UpdateForwardRuleMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	log.Info().RawJSON("params", params).Bool("wsServer_nil", m.wsServer == nil).Msg("=== updateForwardRule called ===")
+
 	var p UpdateForwardRuleParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, errors.New("invalid params")
 	}
+
+	log.Info().Str("rule_id", p.ID).Msg("Updating forward rule")
 
 	if p.ID == "" {
 		return nil, errors.New("id is required")
@@ -292,6 +298,9 @@ func (m *UpdateForwardRuleMethod) Execute(ctx context.Context, params json.RawMe
 		}
 		return nil, fmt.Errorf("failed to get rule: %w", err)
 	}
+
+	// 记录原来的监听地址
+	oldListenAddr := rule.ListenAddr
 
 	if p.Name != nil {
 		rule.Name = *p.Name
@@ -309,13 +318,51 @@ func (m *UpdateForwardRuleMethod) Execute(ctx context.Context, params json.RawMe
 		rule.ExitAddr = *p.ExitAddr
 	}
 
+	// 如果监听地址发生变化，先检查新端口是否可用
+	if rule.ListenAddr != oldListenAddr && m.wsServer != nil {
+		log.Info().
+			Str("old_addr", oldListenAddr).
+			Str("new_addr", rule.ListenAddr).
+			Str("listen_client", rule.ListenClient).
+			Msg("Listen address changed, checking port availability")
+
+		available, errMsg := m.wsServer.CheckPortAvailable(
+			rule.ListenClient,
+			rule.ListenAddr,
+			rule.ID,
+			5*time.Second, // 超时时间
+		)
+		if !available {
+			log.Warn().
+				Str("addr", rule.ListenAddr).
+				Str("error", errMsg).
+				Msg("Port check failed")
+			return nil, fmt.Errorf("端口 %s 不可用: %s", rule.ListenAddr, errMsg)
+		}
+		log.Info().Str("addr", rule.ListenAddr).Msg("Port check passed")
+	}
+
 	if err := m.storage.Forward.Update(rule); err != nil {
 		return nil, fmt.Errorf("failed to update rule: %w", err)
 	}
 
+	log.Info().
+		Str("rule_id", rule.ID).
+		Str("listen_client", rule.ListenClient).
+		Str("listen_addr", rule.ListenAddr).
+		Str("type", string(rule.Type)).
+		Msg("Forward rule updated, preparing to notify client")
+
 	// 通知相关 client 规则已更新
 	if m.wsServer != nil {
-		m.wsServer.NotifyRuleUpdate(rule.ListenClient)
+		ok := m.wsServer.NotifyRuleUpdate(rule.ListenClient)
+		log.Info().
+			Str("rule_id", rule.ID).
+			Str("listen_client", rule.ListenClient).
+			Bool("notify_success", ok).
+			Msg("Rule update notification result")
+	} else {
+		log.Warn().Str("rule_id", rule.ID).Msg("wsServer is nil, cannot notify client")
 	}
 
 	return map[string]interface{}{

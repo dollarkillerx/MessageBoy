@@ -93,6 +93,20 @@ func (f *RelayForwarder) Stop() {
 	f.wg.Wait()
 }
 
+// GetConfigHash 返回配置的哈希值，用于比较配置是否变化
+func (f *RelayForwarder) GetConfigHash() string {
+	hash := "relay:" + f.listenAddr + ":" + f.exitAddr + ":"
+	for _, r := range f.relayChain {
+		hash += r + ","
+	}
+	return hash
+}
+
+// GetListenAddr 返回监听地址
+func (f *RelayForwarder) GetListenAddr() string {
+	return f.listenAddr
+}
+
 func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()

@@ -35,6 +35,8 @@ type Client struct {
 type ForwarderInterface interface {
 	Start() error
 	Stop()
+	GetConfigHash() string
+	GetListenAddr() string
 }
 
 func New(cfg *ClientConfig) *Client {
@@ -235,12 +237,19 @@ func (c *Client) handleTunnelMessages() {
 
 		case relay.MsgTypeRuleUpdate:
 			// 规则更新通知，重新获取规则
-			log.Info().Msg("Received rule update notification, fetching new rules...")
+			log.Info().Str("client_id", c.clientID).Msg("=== Received MsgTypeRuleUpdate from server ===")
 			go func() {
+				log.Debug().Msg("Starting to fetch and apply new rules...")
 				if err := c.fetchAndApplyRules(); err != nil {
 					log.Warn().Err(err).Msg("Failed to fetch updated rules")
+				} else {
+					log.Info().Msg("Successfully fetched and applied new rules")
 				}
 			}()
+
+		case relay.MsgTypeCheckPort:
+			// 端口检查请求
+			go c.handleCheckPort(msg)
 		}
 	}
 }
@@ -343,6 +352,70 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 	c.wsConn.Send(closeMsg)
 }
 
+// handleCheckPort 处理端口检查请求
+func (c *Client) handleCheckPort(msg *relay.TunnelMessage) {
+	addr := msg.Target
+	currentRuleID := msg.RuleID
+
+	log.Info().
+		Str("addr", addr).
+		Str("current_rule_id", currentRuleID).
+		Uint32("request_id", msg.StreamID).
+		Msg("=== Received port check request ===")
+
+	var errMsg string
+
+	// 检查是否是当前规则正在使用的端口（如果是，则允许更新）
+	c.mu.RLock()
+	if currentRuleID != "" {
+		if f, exists := c.forwarders[currentRuleID]; exists {
+			if f.GetListenAddr() == addr {
+				log.Info().
+					Str("addr", addr).
+					Str("rule_id", currentRuleID).
+					Msg("Port is used by current rule, will be restarted - available")
+				c.mu.RUnlock()
+				// 发送成功响应
+				c.sendPortCheckResult(msg.StreamID, "")
+				return
+			}
+		}
+	}
+	c.mu.RUnlock()
+
+	// 尝试监听端口
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		errMsg = "该端口已被其他程序占用"
+		log.Warn().Str("addr", addr).Err(err).Msg("Port check failed - port not available")
+	} else {
+		listener.Close()
+		log.Info().Str("addr", addr).Msg("Port check passed - port available")
+	}
+
+	// 发送检查结果
+	c.sendPortCheckResult(msg.StreamID, errMsg)
+}
+
+// sendPortCheckResult 发送端口检查结果
+func (c *Client) sendPortCheckResult(requestID uint32, errMsg string) {
+	resultMsg := &relay.TunnelMessage{
+		Type:     relay.MsgTypeCheckPortResult,
+		StreamID: requestID,
+		Error:    errMsg,
+	}
+
+	if err := c.wsConn.Send(resultMsg); err != nil {
+		log.Warn().Err(err).Uint32("request_id", requestID).Msg("Failed to send port check result")
+	} else {
+		log.Info().
+			Uint32("request_id", requestID).
+			Bool("available", errMsg == "").
+			Str("error", errMsg).
+			Msg("Port check result sent")
+	}
+}
+
 func (c *Client) heartbeatLoop() {
 	ticker := time.NewTicker(time.Duration(c.cfg.Connection.HeartbeatInterval) * time.Second)
 	defer ticker.Stop()
@@ -402,9 +475,38 @@ func (c *Client) fetchAndApplyRules() error {
 	return nil
 }
 
+// computeRuleConfigHash 计算规则配置的哈希值
+func computeRuleConfigHash(rule map[string]interface{}) string {
+	ruleType := rule["type"].(string)
+	listenAddr := rule["listen_addr"].(string)
+
+	if ruleType == "direct" {
+		targetAddr := ""
+		if ta, ok := rule["target_addr"].(string); ok {
+			targetAddr = ta
+		}
+		return "direct:" + listenAddr + ":" + targetAddr
+	}
+
+	// relay type
+	exitAddr := ""
+	if ea, ok := rule["exit_addr"].(string); ok {
+		exitAddr = ea
+	}
+	hash := "relay:" + listenAddr + ":" + exitAddr + ":"
+	if chain, ok := rule["relay_chain"].([]interface{}); ok {
+		for _, v := range chain {
+			hash += v.(string) + ","
+		}
+	}
+	return hash
+}
+
 func (c *Client) applyRules(rules []interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	log.Info().Int("rule_count", len(rules)).Int("current_forwarders", len(c.forwarders)).Msg("Applying rules")
 
 	// 停止不再需要的 forwarder
 	newRuleIDs := make(map[string]bool)
@@ -415,9 +517,10 @@ func (c *Client) applyRules(rules []interface{}) {
 
 	for id, f := range c.forwarders {
 		if !newRuleIDs[id] {
+			log.Info().Str("rule_id", id).Msg("Stopping forwarder (rule removed)")
 			f.Stop()
 			delete(c.forwarders, id)
-			log.Info().Str("rule_id", id).Msg("Stopped forwarder")
+			log.Info().Str("rule_id", id).Msg("Stopped forwarder (rule removed)")
 		}
 	}
 
@@ -426,13 +529,43 @@ func (c *Client) applyRules(rules []interface{}) {
 		go c.reportRuleStatus(ruleID, status, errMsg)
 	}
 
-	// 启动新的 forwarder
+	// 启动新的或更新的 forwarder
 	for _, r := range rules {
 		rule := r.(map[string]interface{})
 		id := rule["id"].(string)
+		listenAddr := rule["listen_addr"].(string)
 
-		if _, exists := c.forwarders[id]; exists {
-			continue
+		log.Debug().
+			Str("rule_id", id).
+			Str("listen_addr", listenAddr).
+			Str("type", rule["type"].(string)).
+			Msg("Processing rule")
+
+		// 检查是否需要更新已存在的 forwarder
+		if existingF, exists := c.forwarders[id]; exists {
+			newConfigHash := computeRuleConfigHash(rule)
+			oldConfigHash := existingF.GetConfigHash()
+			log.Debug().
+				Str("rule_id", id).
+				Str("old_hash", oldConfigHash).
+				Str("new_hash", newConfigHash).
+				Bool("changed", oldConfigHash != newConfigHash).
+				Msg("Comparing config hash")
+			if oldConfigHash == newConfigHash {
+				// 配置未变化，跳过
+				log.Debug().Str("rule_id", id).Msg("Config unchanged, skipping")
+				continue
+			}
+			// 配置已变化，停止旧的
+			log.Info().
+				Str("rule_id", id).
+				Str("old_hash", oldConfigHash).
+				Str("new_hash", newConfigHash).
+				Msg("Config changed, restarting forwarder")
+			existingF.Stop()
+			delete(c.forwarders, id)
+		} else {
+			log.Debug().Str("rule_id", id).Msg("New rule, will create forwarder")
 		}
 
 		ruleType := rule["type"].(string)

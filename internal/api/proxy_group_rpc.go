@@ -412,6 +412,17 @@ func (m *AddProxyGroupNodeMethod) Execute(ctx context.Context, params json.RawMe
 		return nil, fmt.Errorf("failed to verify client: %w", err)
 	}
 
+	// 检查客户端是否已在代理组中
+	existingNodes, err := m.storage.ProxyGroup.GetNodesByGroupID(p.GroupID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing nodes: %w", err)
+	}
+	for _, n := range existingNodes {
+		if n.ClientID == p.ClientID {
+			return nil, errors.New("该客户端已在代理组中")
+		}
+	}
+
 	node := &model.ProxyGroupNode{
 		ID:       uuid.New().String(),
 		GroupID:  p.GroupID,
