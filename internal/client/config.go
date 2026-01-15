@@ -17,7 +17,7 @@ type ClientConfig struct {
 type ClientSection struct {
 	ServerURL string `mapstructure:"ServerURL"`
 	Token     string `mapstructure:"Token"`
-	RelayIP   string `mapstructure:"RelayIP"` // 可选，配置后在中继时使用此地址
+	ReportIP  string `mapstructure:"ReportIP"` // 可选，上报给服务器的外部 IP（用于显示）
 }
 
 type ConnectionSection struct {

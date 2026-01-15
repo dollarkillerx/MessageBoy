@@ -93,9 +93,10 @@ const columns: DataTableColumns<ForwardRule> = [
     title: '中继链',
     key: 'relay_chain',
     render(row) {
-      if (!row.relay_chain?.length) return '-'
+      const chain = row.relay_chain
+      if (!chain?.length) return '-'
       return h(NSpace, { size: 'small' }, {
-        default: () => row.relay_chain.map(r =>
+        default: () => chain.map(r =>
           h(NTag, { size: 'small', type: r.startsWith('@') ? 'success' : 'default' }, { default: () => r })
         )
       })

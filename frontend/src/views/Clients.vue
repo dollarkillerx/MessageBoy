@@ -46,6 +46,7 @@ const currentSSHClient = ref<Client | null>(null)
 // 创建表单
 const createForm = ref({
   name: '',
+  relay_ip: '',
   ssh_host: '',
   ssh_port: 22,
   ssh_user: 'root',
@@ -75,6 +76,21 @@ const columns: DataTableColumns<Client> = [
     render(row) {
       if (!row.ssh_host) return '-'
       return `${row.ssh_host}:${row.ssh_port || 22}`
+    }
+  },
+  {
+    title: '连接 IP',
+    key: 'last_ip',
+    render(row) {
+      return row.last_ip || '-'
+    }
+  },
+  {
+    title: '中继地址',
+    key: 'relay_ip',
+    render(row) {
+      if (!row.relay_ip) return h(NText, { depth: 3 }, { default: () => '使用连接IP' })
+      return row.relay_ip
     }
   },
   {
@@ -192,6 +208,7 @@ function stopBandwidthTimer() {
 function openCreateModal() {
   createForm.value = {
     name: '',
+    relay_ip: '',
     ssh_host: '',
     ssh_port: 22,
     ssh_user: 'root',
@@ -423,6 +440,9 @@ onUnmounted(() => {
       <NForm label-placement="left" label-width="100">
         <NFormItem label="名称" required>
           <NInput v-model:value="createForm.name" placeholder="客户端名称" />
+        </NFormItem>
+        <NFormItem label="中继地址">
+          <NInput v-model:value="createForm.relay_ip" placeholder="中继时使用的 IP 地址（可选，为空则使用连接 IP）" />
         </NFormItem>
         <NFormItem label="SSH 主机">
           <NInput v-model:value="createForm.ssh_host" placeholder="IP 或域名（可选）" />

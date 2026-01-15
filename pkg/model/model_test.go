@@ -314,10 +314,12 @@ func TestProxyGroupNodeTableName(t *testing.T) {
 
 func TestClientJSONSerialization(t *testing.T) {
 	client := Client{
-		ID:     "test-id",
-		Name:   "Test Client",
-		Token:  "secret-token",
-		Status: ClientStatusOnline,
+		ID:      "test-id",
+		Name:    "Test Client",
+		Token:   "secret-token",
+		Status:  ClientStatusOnline,
+		LastIP:  "192.168.1.100",
+		RelayIP: "10.0.0.1",
 	}
 
 	data, err := json.Marshal(client)
@@ -339,6 +341,12 @@ func TestClientJSONSerialization(t *testing.T) {
 	}
 	if decoded.Status != client.Status {
 		t.Error("Status mismatch")
+	}
+	if decoded.LastIP != client.LastIP {
+		t.Error("LastIP mismatch")
+	}
+	if decoded.RelayIP != client.RelayIP {
+		t.Error("RelayIP mismatch")
 	}
 }
 

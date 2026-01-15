@@ -31,6 +31,7 @@ func (m *CreateClientMethod) Name() string { return "createClient" }
 type CreateClientParams struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	RelayIP     string `json:"relay_ip"` // 中继地址，为空时使用连接 IP
 	SSHHost     string `json:"ssh_host"`
 	SSHPort     int    `json:"ssh_port"`
 	SSHUser     string `json:"ssh_user"`
@@ -55,6 +56,7 @@ func (m *CreateClientMethod) Execute(ctx context.Context, params json.RawMessage
 		ID:          uuid.New().String(),
 		Name:        p.Name,
 		Description: p.Description,
+		RelayIP:     p.RelayIP,
 		SSHHost:     p.SSHHost,
 		SSHPort:     p.SSHPort,
 		SSHUser:     p.SSHUser,
@@ -140,6 +142,7 @@ func (m *GetClientListMethod) Execute(ctx context.Context, params json.RawMessag
 			"name":       c.Name,
 			"status":     c.Status,
 			"last_ip":    c.LastIP,
+			"relay_ip":   c.RelayIP,
 			"last_seen":  c.LastSeen,
 			"hostname":   c.Hostname,
 			"version":    c.Version,
@@ -198,6 +201,7 @@ func (m *GetClientMethod) Execute(ctx context.Context, params json.RawMessage) (
 		"id":           client.ID,
 		"name":         client.Name,
 		"description":  client.Description,
+		"relay_ip":     client.RelayIP,
 		"ssh_host":     client.SSHHost,
 		"ssh_port":     client.SSHPort,
 		"ssh_user":     client.SSHUser,
@@ -229,6 +233,7 @@ type UpdateClientParams struct {
 	ID          string  `json:"id"`
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	RelayIP     *string `json:"relay_ip"`
 	SSHHost     *string `json:"ssh_host"`
 	SSHPort     *int    `json:"ssh_port"`
 	SSHUser     *string `json:"ssh_user"`
@@ -259,6 +264,9 @@ func (m *UpdateClientMethod) Execute(ctx context.Context, params json.RawMessage
 	}
 	if p.Description != nil {
 		client.Description = *p.Description
+	}
+	if p.RelayIP != nil {
+		client.RelayIP = *p.RelayIP
 	}
 	if p.SSHHost != nil {
 		client.SSHHost = *p.SSHHost

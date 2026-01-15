@@ -30,7 +30,8 @@ type ClientRegisterParams struct {
 	Token    string `json:"token"`
 	Hostname string `json:"hostname"`
 	Version  string `json:"version"`
-	RelayIP  string `json:"relay_ip"` // 可选，客户端配置的中继地址
+	RelayIP  string `json:"relay_ip"`  // 可选，客户端配置的中继地址
+	ReportIP string `json:"report_ip"` // 可选，客户端上报的外部 IP
 }
 
 func (m *ClientRegisterMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -52,9 +53,16 @@ func (m *ClientRegisterMethod) Execute(ctx context.Context, params json.RawMessa
 	}
 
 	// 获取客户端 IP
-	clientIP := ""
-	if ginCtx := GetGinContext(ctx); ginCtx != nil {
-		clientIP = ginCtx.ClientIP()
+	// 优先使用客户端上报的 IP，否则从请求中获取
+	clientIP := p.ReportIP
+	if clientIP == "" {
+		if ginCtx := GetGinContext(ctx); ginCtx != nil {
+			clientIP = ginCtx.ClientIP()
+			// 规范化本地回环地址
+			if clientIP == "::1" {
+				clientIP = "127.0.0.1"
+			}
+		}
 	}
 
 	// 更新 client 信息

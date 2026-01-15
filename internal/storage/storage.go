@@ -51,7 +51,8 @@ func NewStorage(cfg *conf.DatabaseConfig) (*Storage, error) {
 		&model.ProxyGroupNode{},
 		&model.TrafficStats{},
 	); err != nil {
-		log.Error().Err(err).Msg("Failed to migrate database")
+		// panic(err)
+		log.Error().Err(err).Msg("failed to migrate database")
 		// return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 

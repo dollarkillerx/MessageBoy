@@ -45,6 +45,7 @@ export const getClient = (id: string) =>
 
 export const createClient = (params: {
   name: string
+  relay_ip?: string
   ssh_host?: string
   ssh_port?: number
   ssh_user?: string

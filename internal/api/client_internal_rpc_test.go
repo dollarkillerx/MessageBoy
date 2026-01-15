@@ -38,6 +38,96 @@ func setupTestStorage(t *testing.T) *storage.Storage {
 	return store
 }
 
+// ===== ClientRegister Tests =====
+
+func setupTestStorageWithClient(t *testing.T) *storage.Storage {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+
+	err = db.AutoMigrate(
+		&model.Client{},
+		&model.ForwardRule{},
+		&model.ProxyGroup{},
+		&model.ProxyGroupNode{},
+		&model.TrafficStats{},
+	)
+	if err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	store := &storage.Storage{}
+	store.Client = storage.NewClientRepository(db)
+	store.Forward = storage.NewForwardRepository(db)
+	store.Traffic = storage.NewTrafficRepository(db)
+
+	return store
+}
+
+func TestClientRegisterMethod_Name(t *testing.T) {
+	method := NewClientRegisterMethod(nil, nil)
+	if method.Name() != "clientRegister" {
+		t.Errorf("expected name 'clientRegister', got '%s'", method.Name())
+	}
+}
+
+func TestClientRegisterMethod_RequireAuth(t *testing.T) {
+	method := NewClientRegisterMethod(nil, nil)
+	if method.RequireAuth() != false {
+		t.Error("expected RequireAuth to return false")
+	}
+}
+
+func TestClientRegisterParams_WithRelayIP(t *testing.T) {
+	// 测试 ClientRegisterParams 能正确解析 relay_ip 和 report_ip
+	jsonData := `{"token": "test-token", "hostname": "test-host", "version": "2.0.0", "relay_ip": "10.0.0.1", "report_ip": "203.0.113.1"}`
+
+	var params ClientRegisterParams
+	err := json.Unmarshal([]byte(jsonData), &params)
+	if err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if params.Token != "test-token" {
+		t.Errorf("expected token 'test-token', got '%s'", params.Token)
+	}
+	if params.Hostname != "test-host" {
+		t.Errorf("expected hostname 'test-host', got '%s'", params.Hostname)
+	}
+	if params.Version != "2.0.0" {
+		t.Errorf("expected version '2.0.0', got '%s'", params.Version)
+	}
+	if params.RelayIP != "10.0.0.1" {
+		t.Errorf("expected relay_ip '10.0.0.1', got '%s'", params.RelayIP)
+	}
+	if params.ReportIP != "203.0.113.1" {
+		t.Errorf("expected report_ip '203.0.113.1', got '%s'", params.ReportIP)
+	}
+}
+
+func TestClientRegisterParams_WithoutRelayIP(t *testing.T) {
+	// 测试 relay_ip 和 report_ip 为空的情况
+	jsonData := `{"token": "test-token", "hostname": "test-host", "version": "2.0.0"}`
+
+	var params ClientRegisterParams
+	err := json.Unmarshal([]byte(jsonData), &params)
+	if err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if params.RelayIP != "" {
+		t.Errorf("expected empty relay_ip, got '%s'", params.RelayIP)
+	}
+	if params.ReportIP != "" {
+		t.Errorf("expected empty report_ip, got '%s'", params.ReportIP)
+	}
+}
+
+// ===== ClientReportTraffic Tests =====
+
 func TestClientReportTrafficMethod_Name(t *testing.T) {
 	method := NewClientReportTrafficMethod(nil)
 	if method.Name() != "clientReportTraffic" {

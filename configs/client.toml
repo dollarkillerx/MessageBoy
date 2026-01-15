@@ -2,7 +2,7 @@
 
 [Client]
 ServerURL = "http://localhost:8080"
-Token = "88a3d4c2f5e657933e2ed660ba642c08b13c3d7228ba462826f6b616bec531dd"
+Token = "f0bbed96501e47cf4b27ee8078031efdf3e42b8feab5733abaeae22ea74314e6"
 
 [Connection]
 ReconnectInterval = 5

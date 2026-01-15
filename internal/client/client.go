@@ -156,9 +156,9 @@ func (c *Client) register() error {
 		"hostname": hostname,
 		"version":  "2.0.0",
 	}
-	// 如果配置了 RelayIP，则上报
-	if c.cfg.Client.RelayIP != "" {
-		params["relay_ip"] = c.cfg.Client.RelayIP
+	// 如果配置了 ReportIP，则上报（用于显示）
+	if c.cfg.Client.ReportIP != "" {
+		params["report_ip"] = c.cfg.Client.ReportIP
 	}
 
 	req := map[string]interface{}{

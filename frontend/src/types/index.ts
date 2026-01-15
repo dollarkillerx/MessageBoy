@@ -5,6 +5,7 @@ export interface Client {
   token?: string
   status: 'online' | 'offline'
   last_ip?: string
+  relay_ip?: string  // 客户端配置的中继地址
   last_seen?: string
   hostname?: string
   version?: string
