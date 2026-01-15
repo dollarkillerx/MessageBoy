@@ -82,3 +82,20 @@ func (r *ForwardRepository) GetByClientID(clientID string) ([]model.ForwardRule,
 func (r *ForwardRepository) ToggleEnabled(id string, enabled bool) error {
 	return r.db.Model(&model.ForwardRule{}).Where("id = ?", id).Update("enabled", enabled).Error
 }
+
+func (r *ForwardRepository) UpdateStatus(id string, status model.RuleStatus, lastError string) error {
+	updates := map[string]any{
+		"status":     status,
+		"last_error": lastError,
+	}
+	return r.db.Model(&model.ForwardRule{}).Where("id = ?", id).Updates(updates).Error
+}
+
+func (r *ForwardRepository) ResetStatusByClientID(clientID string) error {
+	return r.db.Model(&model.ForwardRule{}).
+		Where("listen_client = ?", clientID).
+		Updates(map[string]any{
+			"status":     model.RuleStatusPending,
+			"last_error": "",
+		}).Error
+}

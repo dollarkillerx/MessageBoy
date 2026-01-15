@@ -230,3 +230,51 @@ func (m *ClientReportTrafficMethod) Execute(ctx context.Context, params json.Raw
 }
 
 func (m *ClientReportTrafficMethod) RequireAuth() bool { return false }
+
+// ClientReportRuleStatusMethod - Client 上报规则状态
+type ClientReportRuleStatusMethod struct {
+	storage *storage.Storage
+}
+
+func NewClientReportRuleStatusMethod(s *storage.Storage) *ClientReportRuleStatusMethod {
+	return &ClientReportRuleStatusMethod{storage: s}
+}
+
+func (m *ClientReportRuleStatusMethod) Name() string { return "clientReportRuleStatus" }
+
+type RuleStatusReportItem struct {
+	RuleID string `json:"rule_id"`
+	Status string `json:"status"` // running, error, stopped
+	Error  string `json:"error,omitempty"`
+}
+
+type ClientReportRuleStatusParams struct {
+	ClientID string                 `json:"client_id"`
+	Reports  []RuleStatusReportItem `json:"reports"`
+}
+
+func (m *ClientReportRuleStatusMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var p ClientReportRuleStatusParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, errors.New("invalid params")
+	}
+
+	if p.ClientID == "" {
+		return nil, errors.New("client_id is required")
+	}
+
+	// 更新规则状态
+	for _, report := range p.Reports {
+		status := model.RuleStatus(report.Status)
+		if err := m.storage.Forward.UpdateStatus(report.RuleID, status, report.Error); err != nil {
+			// 忽略单条更新失败，继续处理其他
+			continue
+		}
+	}
+
+	return map[string]interface{}{
+		"ack": true,
+	}, nil
+}
+
+func (m *ClientReportRuleStatusMethod) RequireAuth() bool { return false }

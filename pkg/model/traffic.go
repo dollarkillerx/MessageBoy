@@ -85,3 +85,31 @@ func FormatBytes(bytes int64) string {
 
 	return fmt.Sprintf("%.2f %s", value, unit)
 }
+
+// FormatBandwidth 格式化带宽为人类可读的字符串 (bytes per second)
+func FormatBandwidth(bytesPerSec int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+
+	var value float64
+	var unit string
+
+	switch {
+	case bytesPerSec >= GB:
+		value = float64(bytesPerSec) / GB
+		unit = "GB/s"
+	case bytesPerSec >= MB:
+		value = float64(bytesPerSec) / MB
+		unit = "MB/s"
+	case bytesPerSec >= KB:
+		value = float64(bytesPerSec) / KB
+		unit = "KB/s"
+	default:
+		return fmt.Sprintf("%d B/s", bytesPerSec)
+	}
+
+	return fmt.Sprintf("%.2f %s", value, unit)
+}

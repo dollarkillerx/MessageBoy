@@ -18,6 +18,7 @@ export interface Client {
 
 // Forward Rule types
 export type ForwardType = 'direct' | 'relay'
+export type RuleStatus = 'pending' | 'running' | 'error' | 'stopped'
 
 export interface ForwardRule {
   id: string
@@ -25,9 +26,13 @@ export interface ForwardRule {
   type: ForwardType
   listen_addr: string
   listen_client: string
-  relay_chain: string[]
-  exit_addr: string
+  listen_client_name?: string
+  target_addr?: string
+  relay_chain?: string[]
+  exit_addr?: string
   enabled: boolean
+  status?: RuleStatus
+  last_error?: string
   created_at: string
   updated_at: string
 }

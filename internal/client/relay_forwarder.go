@@ -19,30 +19,41 @@ type RelayForwarder struct {
 	relayChain []string
 	cfg        ForwarderSection
 
-	wsConn   *relay.WSClientConn
-	listener net.Listener
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	wsConn         *relay.WSClientConn
+	listener       net.Listener
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
+	statusCallback StatusCallback
 }
 
-func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn) *RelayForwarder {
+func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn, cb StatusCallback) *RelayForwarder {
 	return &RelayForwarder{
-		id:         id,
-		listenAddr: listenAddr,
-		exitAddr:   exitAddr,
-		relayChain: relayChain,
-		cfg:        cfg,
-		wsConn:     wsConn,
-		stopCh:     make(chan struct{}),
+		id:             id,
+		listenAddr:     listenAddr,
+		exitAddr:       exitAddr,
+		relayChain:     relayChain,
+		cfg:            cfg,
+		wsConn:         wsConn,
+		stopCh:         make(chan struct{}),
+		statusCallback: cb,
 	}
 }
 
 func (f *RelayForwarder) Start() error {
 	listener, err := net.Listen("tcp", f.listenAddr)
 	if err != nil {
+		// 上报错误状态
+		if f.statusCallback != nil {
+			f.statusCallback(f.id, "error", err.Error())
+		}
 		return err
 	}
 	f.listener = listener
+
+	// 上报运行状态
+	if f.statusCallback != nil {
+		f.statusCallback(f.id, "running", "")
+	}
 
 	log.Info().
 		Str("id", f.id).

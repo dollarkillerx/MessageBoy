@@ -104,6 +104,7 @@ func (s *ApiServer) registerRpcMethods() {
 	s.rpcHandler.Register(NewClientHeartbeatMethod(s.storage))
 	s.rpcHandler.Register(NewClientGetRulesMethod(s.storage))
 	s.rpcHandler.Register(NewClientReportTrafficMethod(s.storage))
+	s.rpcHandler.Register(NewClientReportRuleStatusMethod(s.storage))
 
 	// 转发规则管理方法 (传入 wsServer 用于规则变更通知)
 	s.rpcHandler.Register(NewCreateForwardRuleMethod(s.storage, s.wsServer))
@@ -127,6 +128,7 @@ func (s *ApiServer) registerRpcMethods() {
 	s.rpcHandler.Register(NewGetTrafficSummaryMethod(s.storage))
 	s.rpcHandler.Register(NewGetTotalTrafficMethod(s.storage))
 	s.rpcHandler.Register(NewGetTodayTrafficMethod(s.storage))
+	s.rpcHandler.Register(NewGetClientBandwidthMethod(s.storage))
 }
 
 // GetStorage 返回存储实例 (用于设置流量统计器)

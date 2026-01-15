@@ -98,3 +98,37 @@ func (m *GetTodayTrafficMethod) Execute(ctx context.Context, params json.RawMess
 		"active_connections": activeConns,
 	}, nil
 }
+
+// GetClientBandwidthMethod 获取客户端带宽统计
+type GetClientBandwidthMethod struct {
+	storage *storage.Storage
+}
+
+func NewGetClientBandwidthMethod(s *storage.Storage) *GetClientBandwidthMethod {
+	return &GetClientBandwidthMethod{storage: s}
+}
+
+func (m *GetClientBandwidthMethod) Name() string      { return "getClientBandwidth" }
+func (m *GetClientBandwidthMethod) RequireAuth() bool { return true }
+
+func (m *GetClientBandwidthMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	// 更新带宽计算
+	m.storage.Traffic.UpdateBandwidth()
+
+	// 获取带宽数据
+	bandwidths := m.storage.Traffic.GetClientBandwidth()
+
+	// 格式化输出
+	result := make([]map[string]interface{}, 0, len(bandwidths))
+	for _, bw := range bandwidths {
+		result = append(result, map[string]interface{}{
+			"client_id":         bw.ClientID,
+			"bandwidth_in":      bw.BandwidthIn,
+			"bandwidth_out":     bw.BandwidthOut,
+			"bandwidth_in_str":  model.FormatBandwidth(bw.BandwidthIn),
+			"bandwidth_out_str": model.FormatBandwidth(bw.BandwidthOut),
+		})
+	}
+
+	return result, nil
+}

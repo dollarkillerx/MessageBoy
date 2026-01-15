@@ -17,22 +17,38 @@ type TrafficRepository struct {
 	// 内存中的实时统计 (定期刷新到数据库)
 	realtimeStats map[string]*RealtimeTraffic
 	mu            sync.RWMutex
+
+	// 带宽计算相关
+	lastBytesIn    map[string]int64 // key: clientID
+	lastBytesOut   map[string]int64
+	lastUpdateTime time.Time
+	bandwidthIn    map[string]int64 // bytes per second
+	bandwidthOut   map[string]int64
+	bwMu           sync.RWMutex
 }
 
 // RealtimeTraffic 实时流量统计 (内存中)
 type RealtimeTraffic struct {
 	RuleID      string
 	ClientID    string
-	BytesIn     int64
+	BytesIn     int64 // 待刷新到数据库的增量
 	BytesOut    int64
 	ActiveConns int32
 	TotalConns  int64
+
+	// 用于带宽计算的累积值（不会被重置）
+	TotalBytesIn  int64
+	TotalBytesOut int64
 }
 
 func NewTrafficRepository(db *gorm.DB) *TrafficRepository {
 	return &TrafficRepository{
 		db:            db,
 		realtimeStats: make(map[string]*RealtimeTraffic),
+		lastBytesIn:   make(map[string]int64),
+		lastBytesOut:  make(map[string]int64),
+		bandwidthIn:   make(map[string]int64),
+		bandwidthOut:  make(map[string]int64),
 	}
 }
 
@@ -67,12 +83,14 @@ func (r *TrafficRepository) getOrCreateStats(ruleID, clientID string) *RealtimeT
 func (r *TrafficRepository) AddBytesIn(ruleID, clientID string, bytes int64) {
 	stats := r.getOrCreateStats(ruleID, clientID)
 	atomic.AddInt64(&stats.BytesIn, bytes)
+	atomic.AddInt64(&stats.TotalBytesIn, bytes) // 累积值用于带宽计算
 }
 
 // AddBytesOut 增加出站流量
 func (r *TrafficRepository) AddBytesOut(ruleID, clientID string, bytes int64) {
 	stats := r.getOrCreateStats(ruleID, clientID)
 	atomic.AddInt64(&stats.BytesOut, bytes)
+	atomic.AddInt64(&stats.TotalBytesOut, bytes) // 累积值用于带宽计算
 }
 
 // IncrementConn 增加连接数
@@ -185,15 +203,15 @@ func (r *TrafficRepository) GetSummaryByRule() ([]model.TrafficSummary, error) {
 			traffic_stats.rule_id,
 			COALESCE(forward_rules.name, '') as rule_name,
 			traffic_stats.client_id,
-			COALESCE(clients.name, '') as client_name,
+			COALESCE(mb_clients.name, '') as client_name,
 			SUM(traffic_stats.bytes_in) as bytes_in,
 			SUM(traffic_stats.bytes_out) as bytes_out,
 			SUM(traffic_stats.total_bytes) as total_bytes,
 			SUM(traffic_stats.total_connections) as total_conns
 		`).
 		Joins("LEFT JOIN forward_rules ON traffic_stats.rule_id = forward_rules.id").
-		Joins("LEFT JOIN clients ON traffic_stats.client_id = clients.id").
-		Group("traffic_stats.rule_id, traffic_stats.client_id, forward_rules.name, clients.name").
+		Joins("LEFT JOIN mb_clients ON traffic_stats.client_id = mb_clients.id").
+		Group("traffic_stats.rule_id, traffic_stats.client_id, forward_rules.name, mb_clients.name").
 		Scan(&results).Error
 
 	if err != nil {
@@ -266,4 +284,82 @@ func (r *TrafficRepository) GetRealtimeActiveConns() int {
 		total += atomic.LoadInt32(&stats.ActiveConns)
 	}
 	return int(total)
+}
+
+// ClientBandwidth 客户端带宽统计
+type ClientBandwidth struct {
+	ClientID     string
+	ClientName   string
+	BytesIn      int64
+	BytesOut     int64
+	BandwidthIn  int64 // bytes per second
+	BandwidthOut int64 // bytes per second
+}
+
+// UpdateBandwidth 更新带宽计算 (应该每秒调用一次)
+func (r *TrafficRepository) UpdateBandwidth() {
+	r.mu.RLock()
+	// 按客户端汇总当前流量（使用不会被重置的累积值）
+	currentIn := make(map[string]int64)
+	currentOut := make(map[string]int64)
+	for _, stats := range r.realtimeStats {
+		currentIn[stats.ClientID] += atomic.LoadInt64(&stats.TotalBytesIn)
+		currentOut[stats.ClientID] += atomic.LoadInt64(&stats.TotalBytesOut)
+	}
+	r.mu.RUnlock()
+
+	r.bwMu.Lock()
+	defer r.bwMu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(r.lastUpdateTime).Seconds()
+	if elapsed < 0.5 {
+		return // 避免频繁更新
+	}
+
+	// 计算带宽
+	for clientID, bytesIn := range currentIn {
+		if lastIn, ok := r.lastBytesIn[clientID]; ok && elapsed > 0 {
+			r.bandwidthIn[clientID] = int64(float64(bytesIn-lastIn) / elapsed)
+		}
+		r.lastBytesIn[clientID] = bytesIn
+	}
+
+	for clientID, bytesOut := range currentOut {
+		if lastOut, ok := r.lastBytesOut[clientID]; ok && elapsed > 0 {
+			r.bandwidthOut[clientID] = int64(float64(bytesOut-lastOut) / elapsed)
+		}
+		r.lastBytesOut[clientID] = bytesOut
+	}
+
+	r.lastUpdateTime = now
+}
+
+// GetClientBandwidth 获取所有客户端的带宽统计
+func (r *TrafficRepository) GetClientBandwidth() []ClientBandwidth {
+	r.bwMu.RLock()
+	defer r.bwMu.RUnlock()
+
+	// 收集所有客户端 ID
+	clientIDs := make(map[string]bool)
+	for clientID := range r.lastBytesIn {
+		clientIDs[clientID] = true
+	}
+	for clientID := range r.lastBytesOut {
+		clientIDs[clientID] = true
+	}
+
+	result := make([]ClientBandwidth, 0, len(clientIDs))
+	for clientID := range clientIDs {
+		bw := ClientBandwidth{
+			ClientID:     clientID,
+			BytesIn:      r.lastBytesIn[clientID],
+			BytesOut:     r.lastBytesOut[clientID],
+			BandwidthIn:  r.bandwidthIn[clientID],
+			BandwidthOut: r.bandwidthOut[clientID],
+		}
+		result = append(result, bw)
+	}
+
+	return result
 }

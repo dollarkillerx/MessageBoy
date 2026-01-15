@@ -37,7 +37,7 @@ type Client struct {
 }
 
 func (Client) TableName() string {
-	return "clients"
+	return "mb_clients"
 }
 
 // SetDefaults 设置默认值

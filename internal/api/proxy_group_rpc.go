@@ -134,14 +134,27 @@ func (m *GetProxyGroupListMethod) Execute(ctx context.Context, params json.RawMe
 		return nil, fmt.Errorf("failed to get group list: %w", err)
 	}
 
-	// 获取每个组的节点数量
+	// 获取每个组的节点
 	groupList := make([]map[string]any, len(groups))
 	for i, g := range groups {
 		nodes, _ := m.storage.ProxyGroup.GetNodesByGroupID(g.ID)
 		healthyCount := 0
-		for _, n := range nodes {
+		nodeList := make([]map[string]any, len(nodes))
+		for j, n := range nodes {
 			if n.Status == model.NodeStatusHealthy {
 				healthyCount++
+			}
+			nodeList[j] = map[string]any{
+				"id":            n.ID,
+				"group_id":      n.GroupID,
+				"client_id":     n.ClientID,
+				"priority":      n.Priority,
+				"weight":        n.Weight,
+				"status":        n.Status,
+				"active_conns":  n.ActiveConns,
+				"total_conns":   n.TotalConns,
+				"last_check_at": n.LastCheckAt,
+				"created_at":    n.CreatedAt,
 			}
 		}
 
@@ -151,8 +164,10 @@ func (m *GetProxyGroupListMethod) Execute(ctx context.Context, params json.RawMe
 			"description":          g.Description,
 			"load_balance_method":  g.LoadBalanceMethod,
 			"health_check_enabled": g.HealthCheckEnabled,
+			"health_check_interval": g.HealthCheckInterval,
 			"node_count":           len(nodes),
 			"healthy_node_count":   healthyCount,
+			"nodes":                nodeList,
 			"created_at":           g.CreatedAt,
 		}
 	}

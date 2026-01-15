@@ -27,7 +27,8 @@ type Client struct {
 	mu             sync.RWMutex
 	trafficCounter *TrafficCounter
 
-	stopCh chan struct{}
+	stopCh      chan struct{}
+	reconnectCh chan struct{} // 触发重连
 }
 
 // ForwarderInterface 转发器接口
@@ -42,31 +43,22 @@ func New(cfg *ClientConfig) *Client {
 		forwarders:     make(map[string]ForwarderInterface),
 		trafficCounter: NewTrafficCounter(),
 		stopCh:         make(chan struct{}),
+		reconnectCh:    make(chan struct{}, 1),
 	}
 }
 
 func (c *Client) Run() error {
 	log.Info().Str("server", c.cfg.Client.ServerURL).Msg("Starting MessageBoy Client")
 
-	// 注册到服务器
-	if err := c.register(); err != nil {
-		return fmt.Errorf("failed to register: %w", err)
+	// 首次注册，带重试
+	if err := c.registerWithRetry(); err != nil {
+		return fmt.Errorf("failed to register after retries: %w", err)
 	}
 
 	log.Info().Str("client_id", c.clientID).Msg("Registered successfully")
 
-	// 建立 WebSocket 连接
-	if err := c.connectWebSocket(); err != nil {
-		log.Warn().Err(err).Msg("Failed to connect WebSocket, relay forwarding disabled")
-	} else {
-		// 启动隧道消息处理
-		go c.handleTunnelMessages()
-	}
-
-	// 获取初始规则
-	if err := c.fetchAndApplyRules(); err != nil {
-		log.Warn().Err(err).Msg("Failed to fetch initial rules")
-	}
+	// 启动主循环
+	go c.mainLoop()
 
 	// 启动心跳
 	go c.heartbeatLoop()
@@ -77,6 +69,69 @@ func (c *Client) Run() error {
 	// 等待停止信号
 	<-c.stopCh
 	return nil
+}
+
+// registerWithRetry 带重试的注册
+func (c *Client) registerWithRetry() error {
+	maxRetries := 10
+	baseDelay := time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-c.stopCh:
+			return fmt.Errorf("stopped")
+		default:
+		}
+
+		if err := c.register(); err != nil {
+			delay := baseDelay * time.Duration(1<<uint(i)) // 指数退避
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			log.Warn().Err(err).Int("attempt", i+1).Dur("retry_in", delay).Msg("Register failed, retrying...")
+			time.Sleep(delay)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("max retries exceeded")
+}
+
+// mainLoop 主循环，负责连接和重连
+func (c *Client) mainLoop() {
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		default:
+		}
+
+		// 建立 WebSocket 连接
+		if err := c.connectWebSocket(); err != nil {
+			log.Warn().Err(err).Msg("Failed to connect WebSocket, will retry...")
+			c.waitBeforeReconnect(5 * time.Second)
+			continue
+		}
+
+		// 获取初始规则
+		if err := c.fetchAndApplyRules(); err != nil {
+			log.Warn().Err(err).Msg("Failed to fetch initial rules")
+		}
+
+		// 处理隧道消息（阻塞直到连接断开）
+		c.handleTunnelMessages()
+
+		log.Warn().Msg("WebSocket disconnected, reconnecting...")
+		c.waitBeforeReconnect(3 * time.Second)
+	}
+}
+
+// waitBeforeReconnect 等待一段时间后重连
+func (c *Client) waitBeforeReconnect(delay time.Duration) {
+	select {
+	case <-c.stopCh:
+	case <-time.After(delay):
+	}
 }
 
 func (c *Client) Stop() {
@@ -366,6 +421,11 @@ func (c *Client) applyRules(rules []interface{}) {
 		}
 	}
 
+	// 状态回调
+	statusCallback := func(ruleID, status, errMsg string) {
+		go c.reportRuleStatus(ruleID, status, errMsg)
+	}
+
 	// 启动新的 forwarder
 	for _, r := range rules {
 		rule := r.(map[string]interface{})
@@ -385,6 +445,7 @@ func (c *Client) applyRules(rules []interface{}) {
 				rule["target_addr"].(string),
 				c.cfg.Forwarder,
 				c.trafficCounter,
+				statusCallback,
 			)
 			c.forwarders[id] = f
 			go f.Start()
@@ -397,6 +458,7 @@ func (c *Client) applyRules(rules []interface{}) {
 		case "relay":
 			if c.wsConn == nil {
 				log.Warn().Str("rule_id", id).Msg("Cannot start relay forwarder: WebSocket not connected")
+				go c.reportRuleStatus(id, "error", "WebSocket not connected")
 				continue
 			}
 
@@ -420,6 +482,7 @@ func (c *Client) applyRules(rules []interface{}) {
 				relayChain,
 				c.cfg.Forwarder,
 				c.wsConn,
+				statusCallback,
 			)
 			c.forwarders[id] = f
 			go f.Start()
@@ -434,8 +497,8 @@ func (c *Client) applyRules(rules []interface{}) {
 }
 
 func (c *Client) trafficReportLoop() {
-	// 每 30 秒上报一次流量
-	ticker := time.NewTicker(30 * time.Second)
+	// 每 1 秒上报一次流量 (用于实时带宽显示)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -470,6 +533,30 @@ func (c *Client) reportTraffic() {
 		log.Warn().Err(err).Msg("Failed to report traffic")
 	} else {
 		log.Debug().Int("rules", len(reports)).Msg("Traffic reported")
+	}
+}
+
+func (c *Client) reportRuleStatus(ruleID, status, errMsg string) {
+	req := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "reportRuleStatus",
+		"method":  "clientReportRuleStatus",
+		"params": map[string]interface{}{
+			"client_id": c.clientID,
+			"reports": []map[string]interface{}{
+				{
+					"rule_id": ruleID,
+					"status":  status,
+					"error":   errMsg,
+				},
+			},
+		},
+	}
+
+	if _, err := c.rpcCall(req); err != nil {
+		log.Warn().Err(err).Str("rule_id", ruleID).Msg("Failed to report rule status")
+	} else {
+		log.Debug().Str("rule_id", ruleID).Str("status", status).Msg("Rule status reported")
 	}
 }
 

@@ -52,6 +52,149 @@ func TestNodeStatus(t *testing.T) {
 	}
 }
 
+func TestRuleStatus(t *testing.T) {
+	statuses := []RuleStatus{
+		RuleStatusPending,
+		RuleStatusRunning,
+		RuleStatusError,
+		RuleStatusStopped,
+	}
+
+	expected := []string{"pending", "running", "error", "stopped"}
+
+	for i, s := range statuses {
+		if string(s) != expected[i] {
+			t.Errorf("RuleStatus %d: got %s, want %s", i, s, expected[i])
+		}
+	}
+}
+
+func TestClientSetDefaults(t *testing.T) {
+	c := &Client{}
+	c.SetDefaults()
+
+	if c.SSHPort != 22 {
+		t.Errorf("expected SSHPort 22, got %d", c.SSHPort)
+	}
+	if c.Status != ClientStatusOffline {
+		t.Errorf("expected Status 'offline', got '%s'", c.Status)
+	}
+
+	// 测试已设置值不被覆盖
+	c2 := &Client{SSHPort: 2222, Status: ClientStatusOnline}
+	c2.SetDefaults()
+
+	if c2.SSHPort != 2222 {
+		t.Errorf("expected SSHPort 2222, got %d", c2.SSHPort)
+	}
+	if c2.Status != ClientStatusOnline {
+		t.Errorf("expected Status 'online', got '%s'", c2.Status)
+	}
+}
+
+func TestForwardRuleSetDefaults(t *testing.T) {
+	r := &ForwardRule{}
+	r.SetDefaults()
+
+	if r.Type != ForwardTypeDirect {
+		t.Errorf("expected Type 'direct', got '%s'", r.Type)
+	}
+
+	// 测试已设置值不被覆盖
+	r2 := &ForwardRule{Type: ForwardTypeRelay}
+	r2.SetDefaults()
+
+	if r2.Type != ForwardTypeRelay {
+		t.Errorf("expected Type 'relay', got '%s'", r2.Type)
+	}
+}
+
+func TestProxyGroupSetDefaults(t *testing.T) {
+	g := &ProxyGroup{}
+	g.SetDefaults()
+
+	if g.LoadBalanceMethod != LoadBalanceRoundRobin {
+		t.Errorf("expected LoadBalanceMethod 'round_robin', got '%s'", g.LoadBalanceMethod)
+	}
+	if g.HealthCheckInterval != 30 {
+		t.Errorf("expected HealthCheckInterval 30, got %d", g.HealthCheckInterval)
+	}
+	if g.HealthCheckTimeout != 5 {
+		t.Errorf("expected HealthCheckTimeout 5, got %d", g.HealthCheckTimeout)
+	}
+	if g.HealthCheckRetries != 3 {
+		t.Errorf("expected HealthCheckRetries 3, got %d", g.HealthCheckRetries)
+	}
+}
+
+func TestProxyGroupNodeSetDefaults(t *testing.T) {
+	n := &ProxyGroupNode{}
+	n.SetDefaults()
+
+	if n.Priority != 100 {
+		t.Errorf("expected Priority 100, got %d", n.Priority)
+	}
+	if n.Weight != 100 {
+		t.Errorf("expected Weight 100, got %d", n.Weight)
+	}
+	if n.Status != NodeStatusUnknown {
+		t.Errorf("expected Status 'unknown', got '%s'", n.Status)
+	}
+}
+
+func TestForwardRuleWithStatus(t *testing.T) {
+	rule := ForwardRule{
+		ID:        "rule-id",
+		Name:      "Test Rule",
+		Type:      ForwardTypeDirect,
+		Status:    RuleStatusRunning,
+		LastError: "",
+	}
+
+	data, err := json.Marshal(rule)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded ForwardRule
+	err = json.Unmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded.Status != RuleStatusRunning {
+		t.Errorf("expected Status 'running', got '%s'", decoded.Status)
+	}
+}
+
+func TestForwardRuleWithError(t *testing.T) {
+	rule := ForwardRule{
+		ID:        "rule-id",
+		Name:      "Test Rule",
+		Type:      ForwardTypeDirect,
+		Status:    RuleStatusError,
+		LastError: "address already in use",
+	}
+
+	data, err := json.Marshal(rule)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var decoded ForwardRule
+	err = json.Unmarshal(data, &decoded)
+	if err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if decoded.Status != RuleStatusError {
+		t.Errorf("expected Status 'error', got '%s'", decoded.Status)
+	}
+	if decoded.LastError != "address already in use" {
+		t.Errorf("expected LastError 'address already in use', got '%s'", decoded.LastError)
+	}
+}
+
 func TestStringSliceScan(t *testing.T) {
 	var ss StringSlice
 
@@ -85,14 +228,14 @@ func TestStringSliceScan(t *testing.T) {
 }
 
 func TestStringSliceValue(t *testing.T) {
-	// Test nil slice
+	// Test nil slice - returns "[]" for database compatibility
 	var nilSlice StringSlice
 	val, err := nilSlice.Value()
 	if err != nil {
 		t.Errorf("Value() error: %v", err)
 	}
-	if val != nil {
-		t.Error("nil slice should return nil value")
+	if val != "[]" {
+		t.Errorf("nil slice should return '[]', got %v", val)
 	}
 
 	// Test non-nil slice
@@ -116,15 +259,15 @@ func TestStringSliceValue(t *testing.T) {
 func TestStringSliceGormDataType(t *testing.T) {
 	var ss StringSlice
 	dataType := ss.GormDataType()
-	if dataType != "jsonb" {
-		t.Errorf("GormDataType() = %s, want jsonb", dataType)
+	if dataType != "text" {
+		t.Errorf("GormDataType() = %s, want text", dataType)
 	}
 }
 
 func TestClientTableName(t *testing.T) {
 	c := Client{}
-	if c.TableName() != "clients" {
-		t.Errorf("TableName() = %s, want clients", c.TableName())
+	if c.TableName() != "mb_clients" {
+		t.Errorf("TableName() = %s, want mb_clients", c.TableName())
 	}
 }
 

@@ -174,6 +174,8 @@ func (m *GetForwardRuleListMethod) Execute(ctx context.Context, params json.RawM
 			"listen_addr":        r.ListenAddr,
 			"listen_client":      r.ListenClient,
 			"listen_client_name": clientNames[r.ListenClient],
+			"status":             r.Status,
+			"last_error":         r.LastError,
 			"created_at":         r.CreatedAt,
 		}
 		if r.Type == model.ForwardTypeDirect {

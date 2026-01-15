@@ -23,13 +23,17 @@ import {
   createClient,
   deleteClient,
   regenerateClientToken,
-  getClientInstallCommand
+  getClientInstallCommand,
+  getClientBandwidth,
+  type ClientBandwidth
 } from '../api/rpc'
 import type { Client } from '../types'
 
 const message = useMessage()
 const loading = ref(true)
 const clients = ref<Client[]>([])
+const bandwidthMap = ref<Map<string, ClientBandwidth>>(new Map())
+let bandwidthTimer: ReturnType<typeof setInterval> | null = null
 
 // Modal state
 const showCreateModal = ref(false)
@@ -88,6 +92,24 @@ const columns: DataTableColumns<Client> = [
     }
   },
   {
+    title: '上行带宽',
+    key: 'bandwidth_out',
+    width: 100,
+    render(row) {
+      const bw = bandwidthMap.value.get(row.id)
+      return bw?.bandwidth_out_str || '-'
+    }
+  },
+  {
+    title: '下行带宽',
+    key: 'bandwidth_in',
+    width: 100,
+    render(row) {
+      const bw = bandwidthMap.value.get(row.id)
+      return bw?.bandwidth_in_str || '-'
+    }
+  },
+  {
     title: '操作',
     key: 'actions',
     width: 280,
@@ -136,6 +158,34 @@ async function loadClients() {
     message.error((error as Error).message)
   } finally {
     loading.value = false
+  }
+}
+
+async function refreshBandwidth() {
+  try {
+    const data = await getClientBandwidth()
+    const map = new Map<string, ClientBandwidth>()
+    if (Array.isArray(data)) {
+      for (const bw of data) {
+        map.set(bw.client_id, bw)
+      }
+    }
+    bandwidthMap.value = map
+  } catch {
+    // 静默处理带宽刷新错误
+  }
+}
+
+function startBandwidthTimer() {
+  if (bandwidthTimer) return
+  refreshBandwidth()
+  bandwidthTimer = setInterval(refreshBandwidth, 1000)
+}
+
+function stopBandwidthTimer() {
+  if (bandwidthTimer) {
+    clearInterval(bandwidthTimer)
+    bandwidthTimer = null
   }
 }
 
@@ -328,9 +378,13 @@ function closeSSH() {
   currentSSHClient.value = null
 }
 
-onMounted(loadClients)
+onMounted(() => {
+  loadClients()
+  startBandwidthTimer()
+})
 
 onUnmounted(() => {
+  stopBandwidthTimer()
   if (ws) ws.close()
   if (terminal) terminal.dispose()
 })

@@ -9,6 +9,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// StatusCallback 状态回调函数类型
+type StatusCallback func(ruleID, status, errMsg string)
+
 type Forwarder struct {
 	id         string
 	listenAddr string
@@ -19,9 +22,10 @@ type Forwarder struct {
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
 	trafficCounter *TrafficCounter
+	statusCallback StatusCallback
 }
 
-func NewForwarder(id, listenAddr, targetAddr string, cfg ForwarderSection, tc *TrafficCounter) *Forwarder {
+func NewForwarder(id, listenAddr, targetAddr string, cfg ForwarderSection, tc *TrafficCounter, cb StatusCallback) *Forwarder {
 	return &Forwarder{
 		id:             id,
 		listenAddr:     listenAddr,
@@ -29,15 +33,25 @@ func NewForwarder(id, listenAddr, targetAddr string, cfg ForwarderSection, tc *T
 		cfg:            cfg,
 		stopCh:         make(chan struct{}),
 		trafficCounter: tc,
+		statusCallback: cb,
 	}
 }
 
 func (f *Forwarder) Start() error {
 	listener, err := net.Listen("tcp", f.listenAddr)
 	if err != nil {
+		// 上报错误状态
+		if f.statusCallback != nil {
+			f.statusCallback(f.id, "error", err.Error())
+		}
 		return err
 	}
 	f.listener = listener
+
+	// 上报运行状态
+	if f.statusCallback != nil {
+		f.statusCallback(f.id, "running", "")
+	}
 
 	log.Info().
 		Str("id", f.id).

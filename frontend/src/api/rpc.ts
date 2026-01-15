@@ -128,3 +128,15 @@ export const getTotalTraffic = () =>
 
 export const getTodayTraffic = () =>
   rpcCall<import('../types').TotalTraffic>('getTodayTraffic', {})
+
+// Client Bandwidth
+export interface ClientBandwidth {
+  client_id: string
+  bandwidth_in: number
+  bandwidth_out: number
+  bandwidth_in_str: string
+  bandwidth_out_str: string
+}
+
+export const getClientBandwidth = () =>
+  rpcCall<ClientBandwidth[]>('getClientBandwidth', {})

@@ -14,6 +14,16 @@ const (
 	ForwardTypeRelay  ForwardType = "relay"
 )
 
+// RuleStatus 规则运行状态
+type RuleStatus string
+
+const (
+	RuleStatusPending RuleStatus = "pending" // 等待客户端启动
+	RuleStatusRunning RuleStatus = "running" // 正常运行
+	RuleStatusError   RuleStatus = "error"   // 启动失败
+	RuleStatusStopped RuleStatus = "stopped" // 已停止
+)
+
 type StringSlice []string
 
 func (s StringSlice) Value() (driver.Value, error) {
@@ -59,6 +69,10 @@ type ForwardRule struct {
 	// 中继转发
 	RelayChain StringSlice `json:"relay_chain,omitempty" gorm:"type:text"`
 	ExitAddr   string      `json:"exit_addr,omitempty" gorm:"size:255"`
+
+	// 运行状态
+	Status    RuleStatus `json:"status" gorm:"size:20"`
+	LastError string     `json:"last_error,omitempty" gorm:"size:500"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
