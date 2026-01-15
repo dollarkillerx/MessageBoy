@@ -637,6 +637,7 @@ func (c *Client) applyRules(rules []interface{}) {
 				relayChain,
 				c.cfg.Forwarder,
 				c.wsConn,
+				c.trafficCounter,
 				statusCallback,
 			)
 			c.forwarders[id] = f

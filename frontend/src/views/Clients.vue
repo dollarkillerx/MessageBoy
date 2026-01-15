@@ -17,10 +17,11 @@ import {
   NCode
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { AddOutline, RefreshOutline, CopyOutline, TerminalOutline } from '@vicons/ionicons5'
+import { AddOutline, RefreshOutline, CopyOutline, TerminalOutline, CreateOutline } from '@vicons/ionicons5'
 import {
   getClientList,
   createClient,
+  updateClient,
   deleteClient,
   regenerateClientToken,
   getClientInstallCommand,
@@ -45,6 +46,19 @@ const currentSSHClient = ref<Client | null>(null)
 
 // 创建表单
 const createForm = ref({
+  name: '',
+  relay_ip: '',
+  ssh_host: '',
+  ssh_port: 22,
+  ssh_user: 'root',
+  ssh_password: ''
+})
+
+// 编辑相关
+const showEditModal = ref(false)
+const editLoading = ref(false)
+const editForm = ref({
+  id: '',
   name: '',
   relay_ip: '',
   ssh_host: '',
@@ -128,7 +142,7 @@ const columns: DataTableColumns<Client> = [
   {
     title: '操作',
     key: 'actions',
-    width: 280,
+    width: 340,
     render(row) {
       return h(NSpace, null, {
         default: () => [
@@ -140,6 +154,13 @@ const columns: DataTableColumns<Client> = [
           }, {
             default: () => 'SSH',
             icon: () => h(NIcon, null, { default: () => h(TerminalOutline) })
+          }),
+          h(NButton, {
+            size: 'small',
+            onClick: () => openEditModal(row)
+          }, {
+            default: () => '编辑',
+            icon: () => h(NIcon, null, { default: () => h(CreateOutline) })
           }),
           h(NButton, {
             size: 'small',
@@ -233,6 +254,45 @@ async function handleCreate() {
     message.error((error as Error).message)
   } finally {
     createLoading.value = false
+  }
+}
+
+function openEditModal(client: Client) {
+  editForm.value = {
+    id: client.id,
+    name: client.name || '',
+    relay_ip: client.relay_ip || '',
+    ssh_host: client.ssh_host || '',
+    ssh_port: client.ssh_port || 22,
+    ssh_user: client.ssh_user || 'root',
+    ssh_password: ''
+  }
+  showEditModal.value = true
+}
+
+async function handleEdit() {
+  if (!editForm.value.name) {
+    message.warning('请输入客户端名称')
+    return
+  }
+
+  editLoading.value = true
+  try {
+    await updateClient(editForm.value.id, {
+      name: editForm.value.name,
+      relay_ip: editForm.value.relay_ip,
+      ssh_host: editForm.value.ssh_host,
+      ssh_port: editForm.value.ssh_port,
+      ssh_user: editForm.value.ssh_user,
+      ssh_password: editForm.value.ssh_password || undefined
+    })
+    message.success('客户端已更新')
+    showEditModal.value = false
+    await loadClients()
+  } catch (error: unknown) {
+    message.error((error as Error).message)
+  } finally {
+    editLoading.value = false
   }
 }
 
@@ -462,6 +522,43 @@ onUnmounted(() => {
           <NButton @click="showCreateModal = false">取消</NButton>
           <NButton type="primary" :loading="createLoading" @click="handleCreate">
             创建
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 编辑弹窗 -->
+    <NModal
+      v-model:show="showEditModal"
+      title="编辑客户端"
+      preset="card"
+      style="width: 500px"
+    >
+      <NForm label-placement="left" label-width="100">
+        <NFormItem label="名称" required>
+          <NInput v-model:value="editForm.name" placeholder="客户端名称" />
+        </NFormItem>
+        <NFormItem label="中继地址">
+          <NInput v-model:value="editForm.relay_ip" placeholder="中继时使用的 IP 地址（可选，为空则使用连接 IP）" />
+        </NFormItem>
+        <NFormItem label="SSH 主机">
+          <NInput v-model:value="editForm.ssh_host" placeholder="IP 或域名（可选）" />
+        </NFormItem>
+        <NFormItem label="SSH 端口">
+          <NInputNumber v-model:value="editForm.ssh_port" :min="1" :max="65535" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="SSH 用户">
+          <NInput v-model:value="editForm.ssh_user" placeholder="root" />
+        </NFormItem>
+        <NFormItem label="SSH 密码">
+          <NInput v-model:value="editForm.ssh_password" type="password" placeholder="留空则保持原密码" show-password-on="click" />
+        </NFormItem>
+      </NForm>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showEditModal = false">取消</NButton>
+          <NButton type="primary" :loading="editLoading" @click="handleEdit">
+            保存
           </NButton>
         </NSpace>
       </template>

@@ -35,7 +35,7 @@ func TestRelayForwarderStatusCallback_Error(t *testing.T) {
 	}
 
 	// Try to start relay forwarder on occupied port (nil wsConn is fine for this test)
-	f := NewRelayForwarder("test-rule", occupiedAddr, "192.168.1.1:80", []string{}, cfg, nil, callback)
+	f := NewRelayForwarder("test-rule", occupiedAddr, "192.168.1.1:80", []string{}, cfg, nil, nil, callback)
 
 	// Start should return error
 	err = f.Start()
@@ -69,7 +69,7 @@ func TestNewRelayForwarder(t *testing.T) {
 	callback := func(ruleID, status, errMsg string) {}
 	relayChain := []string{"client-a", "client-b"}
 
-	f := NewRelayForwarder("rule-456", "0.0.0.0:9090", "192.168.1.1:443", relayChain, cfg, nil, callback)
+	f := NewRelayForwarder("rule-456", "0.0.0.0:9090", "192.168.1.1:443", relayChain, cfg, nil, nil, callback)
 
 	if f.id != "rule-456" {
 		t.Errorf("Expected id 'rule-456', got '%s'", f.id)
@@ -103,7 +103,7 @@ func TestRelayForwarderWithNilCallback(t *testing.T) {
 	}
 
 	// Should not panic with nil callback
-	f := NewRelayForwarder("test-rule", "127.0.0.1:0", "192.168.1.1:80", []string{}, cfg, nil, nil)
+	f := NewRelayForwarder("test-rule", "127.0.0.1:0", "192.168.1.1:80", []string{}, cfg, nil, nil, nil)
 
 	if f.statusCallback != nil {
 		t.Error("Expected statusCallback to be nil")

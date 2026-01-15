@@ -53,8 +53,16 @@ export const createClient = (params: {
 }) =>
   rpcCall<import('../types').Client>('createClient', params)
 
-export const updateClient = (id: string, name: string) =>
-  rpcCall<import('../types').Client>('updateClient', { id, name })
+export const updateClient = (id: string, params: {
+  name?: string
+  description?: string
+  relay_ip?: string
+  ssh_host?: string
+  ssh_port?: number
+  ssh_user?: string
+  ssh_password?: string
+}) =>
+  rpcCall<{ success: boolean }>('updateClient', { id, ...params })
 
 export const deleteClient = (id: string) =>
   rpcCall<void>('deleteClient', { id })

@@ -93,11 +93,11 @@ func (r *TrafficRepository) AddBytesOut(ruleID, clientID string, bytes int64) {
 	atomic.AddInt64(&stats.TotalBytesOut, bytes) // 累积值用于带宽计算
 }
 
-// IncrementConn 增加连接数
+// IncrementConn 增加连接数 (只在内存中统计，不持久化)
 func (r *TrafficRepository) IncrementConn(ruleID, clientID string) {
 	stats := r.getOrCreateStats(ruleID, clientID)
 	atomic.AddInt32(&stats.ActiveConns, 1)
-	atomic.AddInt64(&stats.TotalConns, 1)
+	atomic.AddInt64(&stats.TotalConns, 1) // 内存中累计，不写入数据库
 }
 
 // DecrementConn 减少活跃连接数
@@ -112,21 +112,20 @@ func (r *TrafficRepository) AddConnections(ruleID, clientID string, count int64)
 	atomic.AddInt64(&stats.TotalConns, count)
 }
 
-// FlushToDatabase 将内存统计刷新到数据库
+// FlushToDatabase 将内存统计刷新到数据库 (只刷新流量，连接数保留在内存)
 func (r *TrafficRepository) FlushToDatabase() error {
 	r.mu.Lock()
 	statsToFlush := make([]*RealtimeTraffic, 0, len(r.realtimeStats))
 	for _, stats := range r.realtimeStats {
-		// 复制数据
+		// 复制数据 (TotalConns 不重置，保留在内存中)
 		statsCopy := &RealtimeTraffic{
 			RuleID:      stats.RuleID,
 			ClientID:    stats.ClientID,
 			BytesIn:     atomic.SwapInt64(&stats.BytesIn, 0),
 			BytesOut:    atomic.SwapInt64(&stats.BytesOut, 0),
 			ActiveConns: atomic.LoadInt32(&stats.ActiveConns),
-			TotalConns:  atomic.SwapInt64(&stats.TotalConns, 0),
 		}
-		if statsCopy.BytesIn > 0 || statsCopy.BytesOut > 0 || statsCopy.TotalConns > 0 {
+		if statsCopy.BytesIn > 0 || statsCopy.BytesOut > 0 {
 			statsToFlush = append(statsToFlush, statsCopy)
 		}
 	}
@@ -138,6 +137,11 @@ func (r *TrafficRepository) FlushToDatabase() error {
 
 	now := time.Now()
 	for _, stats := range statsToFlush {
+		// 只刷新流量数据，连接数只保存在内存中
+		if stats.BytesIn == 0 && stats.BytesOut == 0 {
+			continue
+		}
+
 		// 查找或创建今天的统计记录
 		var existing model.TrafficStats
 		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -146,33 +150,31 @@ func (r *TrafficRepository) FlushToDatabase() error {
 			stats.RuleID, stats.ClientID, today).First(&existing).Error
 
 		if err == gorm.ErrRecordNotFound {
-			// 创建新记录
+			// 创建新记录 (不包含 TotalConnections)
 			newStats := model.TrafficStats{
-				ID:               uuid.New().String(),
-				RuleID:           stats.RuleID,
-				ClientID:         stats.ClientID,
-				BytesIn:          stats.BytesIn,
-				BytesOut:         stats.BytesOut,
-				TotalBytes:       stats.BytesIn + stats.BytesOut,
-				ActiveConns:      int(stats.ActiveConns),
-				TotalConnections: stats.TotalConns,
-				PeriodStart:      today,
-				PeriodEnd:        today.Add(24 * time.Hour),
-				CreatedAt:        now,
-				UpdatedAt:        now,
+				ID:          uuid.New().String(),
+				RuleID:      stats.RuleID,
+				ClientID:    stats.ClientID,
+				BytesIn:     stats.BytesIn,
+				BytesOut:    stats.BytesOut,
+				TotalBytes:  stats.BytesIn + stats.BytesOut,
+				ActiveConns: int(stats.ActiveConns),
+				PeriodStart: today,
+				PeriodEnd:   today.Add(24 * time.Hour),
+				CreatedAt:   now,
+				UpdatedAt:   now,
 			}
 			if err := r.db.Create(&newStats).Error; err != nil {
 				return err
 			}
 		} else if err == nil {
-			// 更新现有记录
+			// 更新现有记录 (不更新 TotalConnections)
 			updates := map[string]interface{}{
-				"bytes_in":          gorm.Expr("bytes_in + ?", stats.BytesIn),
-				"bytes_out":         gorm.Expr("bytes_out + ?", stats.BytesOut),
-				"total_bytes":       gorm.Expr("total_bytes + ?", stats.BytesIn+stats.BytesOut),
-				"active_conns":      stats.ActiveConns,
-				"total_connections": gorm.Expr("total_connections + ?", stats.TotalConns),
-				"updated_at":        now,
+				"bytes_in":     gorm.Expr("bytes_in + ?", stats.BytesIn),
+				"bytes_out":    gorm.Expr("bytes_out + ?", stats.BytesOut),
+				"total_bytes":  gorm.Expr("total_bytes + ?", stats.BytesIn+stats.BytesOut),
+				"active_conns": stats.ActiveConns,
+				"updated_at":   now,
 			}
 			if err := r.db.Model(&existing).Updates(updates).Error; err != nil {
 				return err
@@ -195,7 +197,6 @@ func (r *TrafficRepository) GetSummaryByRule() ([]model.TrafficSummary, error) {
 		BytesIn    int64
 		BytesOut   int64
 		TotalBytes int64
-		TotalConns int64
 	}
 
 	err := r.db.Table("traffic_stats").
@@ -206,8 +207,7 @@ func (r *TrafficRepository) GetSummaryByRule() ([]model.TrafficSummary, error) {
 			COALESCE(mb_clients.name, '') as client_name,
 			SUM(traffic_stats.bytes_in) as bytes_in,
 			SUM(traffic_stats.bytes_out) as bytes_out,
-			SUM(traffic_stats.total_bytes) as total_bytes,
-			SUM(traffic_stats.total_connections) as total_conns
+			SUM(traffic_stats.total_bytes) as total_bytes
 		`).
 		Joins("LEFT JOIN forward_rules ON traffic_stats.rule_id = forward_rules.id").
 		Joins("LEFT JOIN mb_clients ON traffic_stats.client_id = mb_clients.id").
@@ -218,30 +218,30 @@ func (r *TrafficRepository) GetSummaryByRule() ([]model.TrafficSummary, error) {
 		return nil, err
 	}
 
-	// 获取实时活跃连接数
+	// 获取实时连接数 (从内存)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	summaries := make([]model.TrafficSummary, 0, len(results))
 	for _, res := range results {
 		summary := model.TrafficSummary{
-			RuleID:           res.RuleID,
-			RuleName:         res.RuleName,
-			ClientID:         res.ClientID,
-			ClientName:       res.ClientName,
-			BytesIn:          res.BytesIn,
-			BytesOut:         res.BytesOut,
-			TotalBytes:       res.TotalBytes,
-			TotalConnections: res.TotalConns,
-			BytesInStr:       model.FormatBytes(res.BytesIn),
-			BytesOutStr:      model.FormatBytes(res.BytesOut),
-			TotalBytesStr:    model.FormatBytes(res.TotalBytes),
+			RuleID:        res.RuleID,
+			RuleName:      res.RuleName,
+			ClientID:      res.ClientID,
+			ClientName:    res.ClientName,
+			BytesIn:       res.BytesIn,
+			BytesOut:      res.BytesOut,
+			TotalBytes:    res.TotalBytes,
+			BytesInStr:    model.FormatBytes(res.BytesIn),
+			BytesOutStr:   model.FormatBytes(res.BytesOut),
+			TotalBytesStr: model.FormatBytes(res.TotalBytes),
 		}
 
-		// 添加实时活跃连接数
+		// 从内存获取实时连接数
 		key := res.RuleID + ":" + res.ClientID
 		if stats, ok := r.realtimeStats[key]; ok {
 			summary.ActiveConns = int(atomic.LoadInt32(&stats.ActiveConns))
+			summary.TotalConnections = atomic.LoadInt64(&stats.TotalConns)
 		}
 
 		summaries = append(summaries, summary)
@@ -259,19 +259,29 @@ func (r *TrafficRepository) GetTodayStats() ([]model.TrafficStats, error) {
 	return stats, err
 }
 
-// GetTotalStats 获取总流量统计
+// GetTotalStats 获取总流量统计 (totalConns 从内存获取)
 func (r *TrafficRepository) GetTotalStats() (bytesIn, bytesOut, totalConns int64, err error) {
 	var result struct {
-		BytesIn    int64
-		BytesOut   int64
-		TotalConns int64
+		BytesIn  int64
+		BytesOut int64
 	}
 
 	err = r.db.Table("traffic_stats").
-		Select("SUM(bytes_in) as bytes_in, SUM(bytes_out) as bytes_out, SUM(total_connections) as total_conns").
+		Select("SUM(bytes_in) as bytes_in, SUM(bytes_out) as bytes_out").
 		Scan(&result).Error
 
-	return result.BytesIn, result.BytesOut, result.TotalConns, err
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	// 从内存获取总连接数
+	r.mu.RLock()
+	for _, stats := range r.realtimeStats {
+		totalConns += atomic.LoadInt64(&stats.TotalConns)
+	}
+	r.mu.RUnlock()
+
+	return result.BytesIn, result.BytesOut, totalConns, nil
 }
 
 // GetRealtimeActiveConns 获取实时活跃连接总数

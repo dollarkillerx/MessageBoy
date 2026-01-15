@@ -23,11 +23,12 @@ type RelayForwarder struct {
 	listener       net.Listener
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
+	trafficCounter *TrafficCounter
 	statusCallback StatusCallback
 }
 
 // NewRelayForwarder 创建中继转发器
-func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn, cb StatusCallback) *RelayForwarder {
+func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn, tc *TrafficCounter, cb StatusCallback) *RelayForwarder {
 	return &RelayForwarder{
 		id:             id,
 		listenAddr:     listenAddr,
@@ -36,6 +37,7 @@ func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg
 		cfg:            cfg,
 		wsConn:         wsConn,
 		stopCh:         make(chan struct{}),
+		trafficCounter: tc,
 		statusCallback: cb,
 	}
 }
@@ -114,6 +116,12 @@ func (f *RelayForwarder) GetListenAddr() string {
 func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()
+
+	// 统计连接数
+	if f.trafficCounter != nil {
+		f.trafficCounter.IncrementConn(f.id)
+		defer f.trafficCounter.DecrementConn(f.id)
+	}
 
 	// 创建一个新的流
 	stream := f.wsConn.GetStreams().NewStream(f.exitAddr)
@@ -215,6 +223,11 @@ func (f *RelayForwarder) forwardToTunnel(clientConn net.Conn, stream *relay.Stre
 			return
 		}
 
+		// 统计出站流量
+		if f.trafficCounter != nil {
+			f.trafficCounter.AddBytesOut(f.id, int64(n))
+		}
+
 		// 构建消息并发送
 		msg := &relay.TunnelMessage{
 			Type:     relay.MsgTypeData,
@@ -235,6 +248,10 @@ func (f *RelayForwarder) forwardFromTunnel(clientConn net.Conn, stream *relay.St
 	for {
 		select {
 		case data := <-stream.DataCh:
+			// 统计入站流量
+			if f.trafficCounter != nil {
+				f.trafficCounter.AddBytesIn(f.id, int64(len(data)))
+			}
 			if _, err := clientConn.Write(data); err != nil {
 				return
 			}

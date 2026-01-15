@@ -138,8 +138,11 @@ func TestTrafficRepository_FlushToDatabase(t *testing.T) {
 	if stats.TotalBytes != 150 {
 		t.Errorf("expected total_bytes 150, got %d", stats.TotalBytes)
 	}
-	if stats.TotalConnections != 1 {
-		t.Errorf("expected 1 total connection, got %d", stats.TotalConnections)
+	// TotalConnections 只存储在内存中，不写入数据库
+	// 验证内存中的 TotalConns
+	memStats := repo.getOrCreateStats("rule1", "client1")
+	if memStats.TotalConns != 1 {
+		t.Errorf("expected 1 total connection in memory, got %d", memStats.TotalConns)
 	}
 }
 
