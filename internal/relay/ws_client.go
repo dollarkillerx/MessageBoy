@@ -11,23 +11,36 @@ import (
 	"github.com/dollarkillerx/MessageBoy/pkg/common/crypto"
 )
 
+const (
+	// AES-GCM Nonce 大小
+	nonceSize = 12
+)
+
+// WSClientConn WebSocket 客户端连接
 type WSClientConn struct {
 	endpoint  string
 	clientID  string
 	secretKey string
 	crypto    *crypto.AESCrypto
 
-	conn      *websocket.Conn
-	sendCh    chan []byte
-	recvCh    chan *TunnelMessage
-	closeCh   chan struct{}
-	closed    bool
-	mu        sync.Mutex
+	conn    *websocket.Conn
+	sendCh  chan *sendItem
+	recvCh  chan *TunnelMessage
+	closeCh chan struct{}
+	closed  bool
+	mu      sync.Mutex
 
 	streams   *StreamManager
 	reconnect bool
 }
 
+// sendItem 发送队列项
+type sendItem struct {
+	buf  *[]byte // 来自 pool
+	size int
+}
+
+// NewWSClientConn 创建 WebSocket 客户端连接
 func NewWSClientConn(endpoint, clientID, secretKey string) (*WSClientConn, error) {
 	aes, err := crypto.NewAESCryptoFromHex(secretKey)
 	if err != nil {
@@ -39,14 +52,15 @@ func NewWSClientConn(endpoint, clientID, secretKey string) (*WSClientConn, error
 		clientID:  clientID,
 		secretKey: secretKey,
 		crypto:    aes,
-		sendCh:    make(chan []byte, 256),
-		recvCh:    make(chan *TunnelMessage, 256),
+		sendCh:    make(chan *sendItem, 512),
+		recvCh:    make(chan *TunnelMessage, 512),
 		closeCh:   make(chan struct{}),
 		streams:   NewStreamManager(),
 		reconnect: true,
 	}, nil
 }
 
+// Connect 连接到 WebSocket 服务器
 func (c *WSClientConn) Connect() error {
 	u, err := url.Parse(c.endpoint)
 	if err != nil {
@@ -84,6 +98,7 @@ func (c *WSClientConn) Connect() error {
 	return nil
 }
 
+// readPump 读取消息循环
 func (c *WSClientConn) readPump() {
 	defer c.handleDisconnect()
 
@@ -96,15 +111,17 @@ func (c *WSClientConn) readPump() {
 			return
 		}
 
-		msg, err := UnmarshalTunnelMessage(message)
+		msg, err := UnmarshalBinary(message)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to unmarshal tunnel message")
 			continue
 		}
 
-		// 解密 payload
-		if msg.Payload != nil && msg.Nonce != nil {
-			decrypted, err := c.crypto.Decrypt(msg.Payload, msg.Nonce)
+		// 解密 payload（如果有）
+		if len(msg.Payload) > nonceSize && msg.Type == MsgTypeData {
+			nonce := msg.Payload[:nonceSize]
+			ciphertext := msg.Payload[nonceSize:]
+			decrypted, err := c.crypto.Decrypt(ciphertext, nonce)
 			if err != nil {
 				log.Warn().Err(err).Msg("Failed to decrypt payload")
 				continue
@@ -120,17 +137,22 @@ func (c *WSClientConn) readPump() {
 	}
 }
 
+// writePump 发送消息循环
 func (c *WSClientConn) writePump() {
 	for {
 		select {
-		case message := <-c.sendCh:
+		case item := <-c.sendCh:
 			c.mu.Lock()
 			if c.conn == nil || c.closed {
 				c.mu.Unlock()
+				PutBuffer(item.buf)
 				return
 			}
-			err := c.conn.WriteMessage(websocket.BinaryMessage, message)
+			err := c.conn.WriteMessage(websocket.BinaryMessage, (*item.buf)[:item.size])
 			c.mu.Unlock()
+
+			// 归还 buffer
+			PutBuffer(item.buf)
 
 			if err != nil {
 				log.Warn().Err(err).Msg("WebSocket write error")
@@ -142,6 +164,7 @@ func (c *WSClientConn) writePump() {
 	}
 }
 
+// handleDisconnect 处理断开连接
 func (c *WSClientConn) handleDisconnect() {
 	c.mu.Lock()
 	wasConnected := c.conn != nil
@@ -154,6 +177,7 @@ func (c *WSClientConn) handleDisconnect() {
 	}
 }
 
+// reconnectLoop 重连循环
 func (c *WSClientConn) reconnectLoop() {
 	backoff := time.Second
 
@@ -176,30 +200,69 @@ func (c *WSClientConn) reconnectLoop() {
 	}
 }
 
+// Send 发送消息（使用 buffer pool，零拷贝优化）
 func (c *WSClientConn) Send(msg *TunnelMessage) error {
-	// 加密 payload
-	if msg.Payload != nil {
+	buf := GetBuffer()
+
+	// 如果是 Data 类型且有 payload，需要加密
+	if msg.Type == MsgTypeData && len(msg.Payload) > 0 {
+		// 加密后的格式: Nonce(12B) + CipherText
 		ciphertext, nonce, err := c.crypto.Encrypt(msg.Payload)
 		if err != nil {
+			PutBuffer(buf)
 			return err
 		}
-		msg.Payload = ciphertext
-		msg.Nonce = nonce
+
+		// 创建新的 payload: nonce + ciphertext
+		encryptedPayload := make([]byte, nonceSize+len(ciphertext))
+		copy(encryptedPayload[:nonceSize], nonce)
+		copy(encryptedPayload[nonceSize:], ciphertext)
+		msg.Payload = encryptedPayload
 	}
 
-	data, err := msg.Marshal()
+	n, err := msg.MarshalTo(*buf)
 	if err != nil {
+		PutBuffer(buf)
 		return err
 	}
 
 	select {
-	case c.sendCh <- data:
+	case c.sendCh <- &sendItem{buf: buf, size: n}:
 		return nil
 	case <-c.closeCh:
+		PutBuffer(buf)
+		return nil
+	default:
+		// channel 满了，尝试非阻塞发送
+		select {
+		case c.sendCh <- &sendItem{buf: buf, size: n}:
+			return nil
+		case <-c.closeCh:
+			PutBuffer(buf)
+			return nil
+		}
+	}
+}
+
+// SendRaw 发送原始数据（用于已经序列化好的数据）
+func (c *WSClientConn) SendRaw(data []byte) error {
+	buf := GetBuffer()
+	if len(data) > len(*buf) {
+		PutBuffer(buf)
+		return ErrBufferTooSmall
+	}
+	n := copy(*buf, data)
+
+	select {
+	case c.sendCh <- &sendItem{buf: buf, size: n}:
+		return nil
+	case <-c.closeCh:
+		PutBuffer(buf)
 		return nil
 	}
 }
 
+// Recv 接收消息
 func (c *WSClientConn) Recv() *TunnelMessage {
 	select {
 	case msg := <-c.recvCh:
@@ -209,6 +272,7 @@ func (c *WSClientConn) Recv() *TunnelMessage {
 	}
 }
 
+// Close 关闭连接
 func (c *WSClientConn) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -224,6 +288,14 @@ func (c *WSClientConn) Close() {
 	}
 }
 
+// GetStreams 获取流管理器
 func (c *WSClientConn) GetStreams() *StreamManager {
 	return c.streams
+}
+
+// IsConnected 检查是否已连接
+func (c *WSClientConn) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil && !c.closed
 }

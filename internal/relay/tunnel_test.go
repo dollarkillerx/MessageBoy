@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +20,16 @@ func TestTunnelMessageMarshal(t *testing.T) {
 			},
 		},
 		{
+			name: "connect_with_ruleid",
+			msg: TunnelMessage{
+				Type:     MsgTypeConnect,
+				StreamID: 12345,
+				Target:   "192.168.1.1:80",
+				RuleID:   "rule-123",
+				Payload:  []byte("next-hop-client"),
+			},
+		},
+		{
 			name: "connack",
 			msg: TunnelMessage{
 				Type:     MsgTypeConnAck,
@@ -33,7 +42,14 @@ func TestTunnelMessageMarshal(t *testing.T) {
 				Type:     MsgTypeData,
 				StreamID: 12345,
 				Payload:  []byte("hello world"),
-				Nonce:    []byte("123456789012"),
+			},
+		},
+		{
+			name: "data_large",
+			msg: TunnelMessage{
+				Type:     MsgTypeData,
+				StreamID: 12345,
+				Payload:  make([]byte, 32*1024), // 32KB
 			},
 		},
 		{
@@ -49,6 +65,37 @@ func TestTunnelMessageMarshal(t *testing.T) {
 				Type:     MsgTypeError,
 				StreamID: 12345,
 				Error:    "connection refused",
+			},
+		},
+		{
+			name: "rule_update",
+			msg: TunnelMessage{
+				Type: MsgTypeRuleUpdate,
+			},
+		},
+		{
+			name: "check_port",
+			msg: TunnelMessage{
+				Type:     MsgTypeCheckPort,
+				StreamID: 1,
+				Target:   "0.0.0.0:8080",
+				RuleID:   "rule-456",
+			},
+		},
+		{
+			name: "check_port_result_ok",
+			msg: TunnelMessage{
+				Type:     MsgTypeCheckPortResult,
+				StreamID: 1,
+				Error:    "",
+			},
+		},
+		{
+			name: "check_port_result_error",
+			msg: TunnelMessage{
+				Type:     MsgTypeCheckPortResult,
+				StreamID: 1,
+				Error:    "port already in use",
 			},
 		},
 	}
@@ -77,15 +124,72 @@ func TestTunnelMessageMarshal(t *testing.T) {
 			if unmarshaled.Error != tc.msg.Error {
 				t.Errorf("Error mismatch: got %v, want %v", unmarshaled.Error, tc.msg.Error)
 			}
+			if unmarshaled.RuleID != tc.msg.RuleID {
+				t.Errorf("RuleID mismatch: got %v, want %v", unmarshaled.RuleID, tc.msg.RuleID)
+			}
+			// Payload 比较
+			if len(unmarshaled.Payload) != len(tc.msg.Payload) {
+				t.Errorf("Payload length mismatch: got %v, want %v", len(unmarshaled.Payload), len(tc.msg.Payload))
+			}
 		})
 	}
 }
 
-func TestUnmarshalInvalidJSON(t *testing.T) {
-	_, err := UnmarshalTunnelMessage([]byte("invalid json"))
+func TestUnmarshalInvalidData(t *testing.T) {
+	// 数据太短
+	_, err := UnmarshalTunnelMessage([]byte{0x01, 0x02})
 	if err == nil {
-		t.Error("Expected error for invalid JSON")
+		t.Error("Expected error for data too short")
 	}
+
+	// 空数据
+	_, err = UnmarshalTunnelMessage([]byte{})
+	if err == nil {
+		t.Error("Expected error for empty data")
+	}
+}
+
+func TestMarshalBinary(t *testing.T) {
+	msg := &TunnelMessage{
+		Type:     MsgTypeData,
+		StreamID: 12345,
+		Payload:  []byte("test payload"),
+	}
+
+	buf, size, err := msg.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error: %v", err)
+	}
+	defer PutBuffer(buf)
+
+	if size != HeaderSize+len(msg.Payload) {
+		t.Errorf("Size mismatch: got %v, want %v", size, HeaderSize+len(msg.Payload))
+	}
+
+	// 验证 header
+	if (*buf)[0] != MsgTypeData {
+		t.Errorf("Type mismatch in buffer")
+	}
+}
+
+func TestBufferPool(t *testing.T) {
+	// 获取 buffer
+	buf1 := GetBuffer()
+	if buf1 == nil {
+		t.Fatal("GetBuffer() returned nil")
+	}
+	if len(*buf1) < DefaultBufSize {
+		t.Errorf("Buffer too small: got %v, want at least %v", len(*buf1), DefaultBufSize)
+	}
+
+	// 归还并重新获取
+	PutBuffer(buf1)
+	buf2 := GetBuffer()
+	if buf2 == nil {
+		t.Fatal("GetBuffer() returned nil after put")
+	}
+
+	PutBuffer(buf2)
 }
 
 func TestStreamManager(t *testing.T) {
@@ -259,14 +363,21 @@ func TestMsgTypes(t *testing.T) {
 	if MsgTypeRuleUpdate != 0x06 {
 		t.Error("MsgTypeRuleUpdate should be 0x06")
 	}
+	if MsgTypeCheckPort != 0x07 {
+		t.Error("MsgTypeCheckPort should be 0x07")
+	}
+	if MsgTypeCheckPortResult != 0x08 {
+		t.Error("MsgTypeCheckPortResult should be 0x08")
+	}
 }
+
+// ===== Benchmarks =====
 
 func BenchmarkTunnelMessageMarshal(b *testing.B) {
 	msg := TunnelMessage{
 		Type:     MsgTypeData,
 		StreamID: 12345,
 		Payload:  make([]byte, 1024),
-		Nonce:    make([]byte, 12),
 	}
 
 	b.ResetTimer()
@@ -275,17 +386,52 @@ func BenchmarkTunnelMessageMarshal(b *testing.B) {
 	}
 }
 
+func BenchmarkTunnelMessageMarshalBinary(b *testing.B) {
+	msg := TunnelMessage{
+		Type:     MsgTypeData,
+		StreamID: 12345,
+		Payload:  make([]byte, 1024),
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf, _, _ := msg.MarshalBinary()
+		PutBuffer(buf)
+	}
+}
+
+func BenchmarkTunnelMessageMarshalTo(b *testing.B) {
+	msg := TunnelMessage{
+		Type:     MsgTypeData,
+		StreamID: 12345,
+		Payload:  make([]byte, 1024),
+	}
+	buf := make([]byte, 2048)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.MarshalTo(buf)
+	}
+}
+
 func BenchmarkTunnelMessageUnmarshal(b *testing.B) {
 	msg := TunnelMessage{
 		Type:     MsgTypeData,
 		StreamID: 12345,
 		Payload:  make([]byte, 1024),
-		Nonce:    make([]byte, 12),
 	}
-	data, _ := json.Marshal(msg)
+	data, _ := msg.Marshal()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		UnmarshalTunnelMessage(data)
+	}
+}
+
+func BenchmarkBufferPool(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := GetBuffer()
+		PutBuffer(buf)
 	}
 }

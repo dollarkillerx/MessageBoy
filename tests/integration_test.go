@@ -116,7 +116,6 @@ func TestTunnelMessageRoundTrip(t *testing.T) {
 			Type:     relay.MsgTypeData,
 			StreamID: 67890,
 			Payload:  []byte("Hello, World!"),
-			Nonce:    []byte("123456789012"),
 		},
 		{
 			Type:     relay.MsgTypeError,

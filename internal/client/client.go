@@ -151,15 +151,21 @@ func (c *Client) Stop() {
 func (c *Client) register() error {
 	hostname, _ := os.Hostname()
 
+	params := map[string]interface{}{
+		"token":    c.cfg.Client.Token,
+		"hostname": hostname,
+		"version":  "2.0.0",
+	}
+	// 如果配置了 RelayIP，则上报
+	if c.cfg.Client.RelayIP != "" {
+		params["relay_ip"] = c.cfg.Client.RelayIP
+	}
+
 	req := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "register",
 		"method":  "clientRegister",
-		"params": map[string]interface{}{
-			"token":    c.cfg.Client.Token,
-			"hostname": hostname,
-			"version":  "2.0.0",
-		},
+		"params":  params,
 	}
 
 	resp, err := c.rpcCall(req)
@@ -300,15 +306,19 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 
 	log.Debug().Uint32("stream_id", msg.StreamID).Msg("Tunnel connected to target")
 
-	// 双向转发
+	// 双向转发（使用 buffer pool 优化）
 	done := make(chan struct{}, 2)
 
-	// 目标 -> 隧道
+	// 目标 -> 隧道（零拷贝优化）
 	go func() {
 		defer func() { done <- struct{}{} }()
-		buf := make([]byte, c.cfg.Forwarder.BufferSize)
+		// 使用 buffer pool
+		buf := relay.GetBuffer()
+		defer relay.PutBuffer(buf)
+
 		for {
-			n, err := targetConn.Read(buf)
+			// 直接读取到 buffer 的 payload 区域
+			n, err := targetConn.Read((*buf)[relay.HeaderSize:])
 			if err != nil {
 				return
 			}
@@ -316,9 +326,8 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 			dataMsg := &relay.TunnelMessage{
 				Type:     relay.MsgTypeData,
 				StreamID: msg.StreamID,
-				Payload:  make([]byte, n),
+				Payload:  (*buf)[relay.HeaderSize : relay.HeaderSize+n],
 			}
-			copy(dataMsg.Payload, buf[:n])
 
 			if err := c.wsConn.Send(dataMsg); err != nil {
 				return

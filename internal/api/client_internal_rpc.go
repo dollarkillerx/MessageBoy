@@ -30,6 +30,7 @@ type ClientRegisterParams struct {
 	Token    string `json:"token"`
 	Hostname string `json:"hostname"`
 	Version  string `json:"version"`
+	RelayIP  string `json:"relay_ip"` // 可选，客户端配置的中继地址
 }
 
 func (m *ClientRegisterMethod) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -60,6 +61,7 @@ func (m *ClientRegisterMethod) Execute(ctx context.Context, params json.RawMessa
 	now := time.Now()
 	client.Status = model.ClientStatusOnline
 	client.LastIP = clientIP
+	client.RelayIP = p.RelayIP // 客户端配置的中继地址
 	client.LastSeen = &now
 	client.Hostname = p.Hostname
 	client.Version = p.Version

@@ -79,7 +79,7 @@ func (s *WSServer) SetTrafficCounter(tc TrafficCounterInterface) {
 type WSClient struct {
 	ID       string
 	Conn     *websocket.Conn
-	SendCh   chan []byte
+	SendCh   chan *sendItem
 	CloseCh  chan struct{}
 	closed   bool
 	mu       sync.Mutex
@@ -109,7 +109,7 @@ func (s *WSServer) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	client := &WSClient{
 		ID:      clientID,
 		Conn:    conn,
-		SendCh:  make(chan []byte, 256),
+		SendCh:  make(chan *sendItem, 512), // 增大缓冲
 		CloseCh: make(chan struct{}),
 	}
 
@@ -148,6 +148,15 @@ func (s *WSServer) SendToClient(clientID string, data []byte) bool {
 		return false
 	}
 	return client.Send(data)
+}
+
+// SendMsgToClient 发送消息到指定 Client（零拷贝）
+func (s *WSServer) SendMsgToClient(clientID string, msg *TunnelMessage) bool {
+	client := s.GetClient(clientID)
+	if client == nil {
+		return false
+	}
+	return client.SendMsg(msg)
 }
 
 func (s *WSServer) cleanupRoutesForClient(clientID string) {
@@ -274,7 +283,7 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 		s.trafficCounter.IncrementConn(msg.RuleID, sourceClientID)
 	}
 
-	// 转发 Connect 消息到目标 Client
+	// 转发 Connect 消息到目标 Client（零拷贝）
 	// 清除 payload 中的下一跳信息，保留 target 地址
 	forwardMsg := &TunnelMessage{
 		Type:     MsgTypeConnect,
@@ -282,15 +291,7 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 		Target:   msg.Target,
 	}
 
-	data, err := forwardMsg.Marshal()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal forward message")
-		s.sendError(sourceClientID, msg.StreamID, "internal error")
-		s.cleanupRoute(msg.StreamID)
-		return
-	}
-
-	if !targetClient.Send(data) {
+	if !targetClient.SendMsg(forwardMsg) {
 		log.Warn().Str("target", targetClientID).Msg("Failed to send to target client")
 		s.sendError(sourceClientID, msg.StreamID, "failed to send to target")
 		s.cleanupRoute(msg.StreamID)
@@ -341,9 +342,8 @@ func (s *WSServer) handleConnAck(fromClientID string, msg *TunnelMessage) {
 		return
 	}
 
-	// 转发到源 Client
-	data, _ := msg.Marshal()
-	s.SendToClient(route.SourceClientID, data)
+	// 转发到源 Client（零拷贝）
+	s.SendMsgToClient(route.SourceClientID, msg)
 }
 
 // handleData 处理数据消息 - 双向路由
@@ -384,9 +384,8 @@ func (s *WSServer) handleData(fromClientID string, msg *TunnelMessage) {
 		}
 	}
 
-	// 转发数据
-	data, _ := msg.Marshal()
-	if !s.SendToClient(targetClientID, data) {
+	// 转发数据（零拷贝）
+	if !s.SendMsgToClient(targetClientID, msg) {
 		log.Debug().
 			Str("target", targetClientID).
 			Uint32("stream_id", msg.StreamID).
@@ -404,7 +403,7 @@ func (s *WSServer) handleClose(fromClientID string, msg *TunnelMessage) {
 		return
 	}
 
-	// 转发关闭消息到对端
+	// 转发关闭消息到对端（零拷贝）
 	var targetClientID string
 	if fromClientID == route.SourceClientID {
 		targetClientID = route.TargetClientID
@@ -412,8 +411,7 @@ func (s *WSServer) handleClose(fromClientID string, msg *TunnelMessage) {
 		targetClientID = route.SourceClientID
 	}
 
-	data, _ := msg.Marshal()
-	s.SendToClient(targetClientID, data)
+	s.SendMsgToClient(targetClientID, msg)
 
 	// 清理路由 (包括减少节点连接计数)
 	s.cleanupRoute(msg.StreamID)
@@ -431,7 +429,7 @@ func (s *WSServer) handleError(fromClientID string, msg *TunnelMessage) {
 		return
 	}
 
-	// 转发错误消息到对端
+	// 转发错误消息到对端（零拷贝）
 	var targetClientID string
 	if fromClientID == route.SourceClientID {
 		targetClientID = route.TargetClientID
@@ -439,8 +437,7 @@ func (s *WSServer) handleError(fromClientID string, msg *TunnelMessage) {
 		targetClientID = route.SourceClientID
 	}
 
-	data, _ := msg.Marshal()
-	s.SendToClient(targetClientID, data)
+	s.SendMsgToClient(targetClientID, msg)
 
 	// 清理路由 (包括减少节点连接计数)
 	s.cleanupRoute(msg.StreamID)
@@ -452,50 +449,22 @@ func (s *WSServer) sendError(clientID string, streamID uint32, errMsg string) {
 		StreamID: streamID,
 		Error:    errMsg,
 	}
-	data, _ := msg.Marshal()
-	s.SendToClient(clientID, data)
+	s.SendMsgToClient(clientID, msg)
 }
 
 // NotifyRuleUpdate 通知 Client 规则已更新
 func (s *WSServer) NotifyRuleUpdate(clientID string) bool {
-	log.Info().Str("client_id", clientID).Msg("=== NotifyRuleUpdate called ===")
+	log.Debug().Str("client_id", clientID).Msg("NotifyRuleUpdate called")
 
 	msg := &TunnelMessage{
 		Type: MsgTypeRuleUpdate,
 	}
-	data, err := msg.Marshal()
-	if err != nil {
-		log.Error().Err(err).Str("client_id", clientID).Msg("Failed to marshal rule update message")
-		return false
-	}
 
-	log.Info().Str("client_id", clientID).Int("data_len", len(data)).Msg("Message marshaled successfully")
-
-	// 列出所有已连接的客户端
-	s.mu.RLock()
-	connectedIDs := make([]string, 0, len(s.clients))
-	for id := range s.clients {
-		connectedIDs = append(connectedIDs, id)
-	}
-	clientCount := len(s.clients)
-	targetClient := s.clients[clientID]
-	s.mu.RUnlock()
-
-	log.Info().
-		Strs("connected_clients", connectedIDs).
-		Int("client_count", clientCount).
-		Str("target_client", clientID).
-		Bool("target_found", targetClient != nil).
-		Msg("Checking connected clients")
-
-	ok := s.SendToClient(clientID, data)
+	ok := s.SendMsgToClient(clientID, msg)
 	if ok {
-		log.Info().Str("client_id", clientID).Msg("✓ Rule update notification sent successfully")
+		log.Debug().Str("client_id", clientID).Msg("Rule update notification sent")
 	} else {
-		log.Warn().
-			Str("client_id", clientID).
-			Strs("connected_clients", connectedIDs).
-			Msg("✗ Failed to send rule update notification (client not connected?)")
+		log.Warn().Str("client_id", clientID).Msg("Failed to send rule update notification")
 	}
 	return ok
 }
@@ -509,16 +478,12 @@ func (s *WSServer) NotifyRuleUpdateToAll() {
 	}
 	s.mu.RUnlock()
 
-	msg := &TunnelMessage{
-		Type: MsgTypeRuleUpdate,
-	}
-	data, err := msg.Marshal()
-	if err != nil {
-		return
-	}
-
+	// 每个 client 需要独立的 buffer
 	for _, clientID := range clientIDs {
-		s.SendToClient(clientID, data)
+		msg := &TunnelMessage{
+			Type: MsgTypeRuleUpdate,
+		}
+		s.SendMsgToClient(clientID, msg)
 	}
 }
 
@@ -556,20 +521,15 @@ func (s *WSServer) CheckPortAvailable(clientID string, addr string, currentRuleI
 		s.pendingPortChecksMu.Unlock()
 	}()
 
-	// 发送检查请求
+	// 发送检查请求（零拷贝）
 	msg := &TunnelMessage{
 		Type:     MsgTypeCheckPort,
 		StreamID: requestID,
 		Target:   addr,
 		RuleID:   currentRuleID, // 传递当前规则 ID，client 可以跳过自己正在监听的端口
 	}
-	data, err := msg.Marshal()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal check port message")
-		return false, "内部错误"
-	}
 
-	if !s.SendToClient(clientID, data) {
+	if !s.SendMsgToClient(clientID, msg) {
 		return false, "无法发送请求到客户端"
 	}
 
@@ -618,12 +578,15 @@ func (c *WSClient) writePump() {
 
 	for {
 		select {
-		case message, ok := <-c.SendCh:
+		case item, ok := <-c.SendCh:
 			if !ok {
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := c.Conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+			err := c.Conn.WriteMessage(websocket.BinaryMessage, (*item.buf)[:item.size])
+			// 归还 buffer
+			PutBuffer(item.buf)
+			if err != nil {
 				log.Warn().Err(err).Str("client_id", c.ID).Msg("WebSocket write error")
 				return
 			}
@@ -633,18 +596,52 @@ func (c *WSClient) writePump() {
 	}
 }
 
+// Send 发送原始数据（兼容旧接口，内部会复制数据到 pool buffer）
 func (c *WSClient) Send(data []byte) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
+		return false
+	}
+	c.mu.Unlock()
+
+	buf := GetBuffer()
+	if len(data) > len(*buf) {
+		PutBuffer(buf)
+		return false
+	}
+	n := copy(*buf, data)
+
+	select {
+	case c.SendCh <- &sendItem{buf: buf, size: n}:
+		return true
+	default:
+		PutBuffer(buf)
+		return false
+	}
+}
+
+// SendMsg 发送消息（零拷贝，使用 buffer pool）
+func (c *WSClient) SendMsg(msg *TunnelMessage) bool {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return false
+	}
+	c.mu.Unlock()
+
+	buf := GetBuffer()
+	n, err := msg.MarshalTo(*buf)
+	if err != nil {
+		PutBuffer(buf)
 		return false
 	}
 
 	select {
-	case c.SendCh <- data:
+	case c.SendCh <- &sendItem{buf: buf, size: n}:
 		return true
 	default:
+		PutBuffer(buf)
 		return false
 	}
 }

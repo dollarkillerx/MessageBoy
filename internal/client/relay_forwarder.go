@@ -26,6 +26,7 @@ type RelayForwarder struct {
 	statusCallback StatusCallback
 }
 
+// NewRelayForwarder 创建中继转发器
 func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn, cb StatusCallback) *RelayForwarder {
 	return &RelayForwarder{
 		id:             id,
@@ -39,6 +40,7 @@ func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg
 	}
 }
 
+// Start 启动转发器
 func (f *RelayForwarder) Start() error {
 	listener, err := net.Listen("tcp", f.listenAddr)
 	if err != nil {
@@ -85,6 +87,7 @@ func (f *RelayForwarder) Start() error {
 	}
 }
 
+// Stop 停止转发器
 func (f *RelayForwarder) Stop() {
 	close(f.stopCh)
 	if f.listener != nil {
@@ -107,6 +110,7 @@ func (f *RelayForwarder) GetListenAddr() string {
 	return f.listenAddr
 }
 
+// handleConnection 处理单个连接（零拷贝优化）
 func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()
@@ -138,75 +142,20 @@ func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 	}
 
 	// 等待 ConnAck 或 Error
-	ackReceived := false
-	timeout := time.After(time.Duration(f.cfg.ConnectTimeout) * time.Second)
-
-AckLoop:
-	for {
-		select {
-		case <-timeout:
-			log.Warn().Uint32("stream_id", stream.ID).Msg("Connect timeout")
-			return
-		case <-stream.CloseCh:
-			return
-		case data := <-stream.DataCh:
-			// 这里收到的是来自 handleTunnelMessage 的信号
-			if len(data) == 1 && data[0] == relay.MsgTypeConnAck {
-				ackReceived = true
-				break AckLoop
-			} else if len(data) == 1 && data[0] == relay.MsgTypeError {
-				log.Warn().Uint32("stream_id", stream.ID).Msg("Connect rejected")
-				return
-			}
-		}
-	}
-
-	if !ackReceived {
+	if !f.waitForConnAck(stream) {
 		return
 	}
 
 	log.Debug().Uint32("stream_id", stream.ID).Msg("Relay tunnel established")
 
-	// 双向转发
+	// 双向转发（使用零拷贝优化）
 	done := make(chan struct{}, 2)
 
-	// 客户端 -> 隧道
-	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, f.cfg.BufferSize)
-		for {
-			n, err := clientConn.Read(buf)
-			if err != nil {
-				return
-			}
-
-			dataMsg := &relay.TunnelMessage{
-				Type:     relay.MsgTypeData,
-				StreamID: stream.ID,
-				Payload:  make([]byte, n),
-			}
-			copy(dataMsg.Payload, buf[:n])
-
-			if err := f.wsConn.Send(dataMsg); err != nil {
-				return
-			}
-		}
-	}()
+	// 客户端 -> 隧道（使用 buffer pool）
+	go f.forwardToTunnel(clientConn, stream, done)
 
 	// 隧道 -> 客户端
-	go func() {
-		defer func() { done <- struct{}{} }()
-		for {
-			select {
-			case data := <-stream.DataCh:
-				if _, err := clientConn.Write(data); err != nil {
-					return
-				}
-			case <-stream.CloseCh:
-				return
-			}
-		}
-	}()
+	go f.forwardFromTunnel(clientConn, stream, done)
 
 	// 等待任一方向完成
 	<-done
@@ -217,4 +166,71 @@ AckLoop:
 		StreamID: stream.ID,
 	}
 	f.wsConn.Send(closeMsg)
+}
+
+// waitForConnAck 等待连接确认
+func (f *RelayForwarder) waitForConnAck(stream *relay.Stream) bool {
+	timeout := time.After(time.Duration(f.cfg.ConnectTimeout) * time.Second)
+
+	for {
+		select {
+		case <-timeout:
+			log.Warn().Uint32("stream_id", stream.ID).Msg("Connect timeout")
+			return false
+		case <-stream.CloseCh:
+			return false
+		case data := <-stream.DataCh:
+			// 这里收到的是来自 handleTunnelMessage 的信号
+			if len(data) == 1 && data[0] == relay.MsgTypeConnAck {
+				return true
+			} else if len(data) == 1 && data[0] == relay.MsgTypeError {
+				log.Warn().Uint32("stream_id", stream.ID).Msg("Connect rejected")
+				return false
+			}
+		}
+	}
+}
+
+// forwardToTunnel 从客户端转发到隧道（使用 buffer pool 优化）
+func (f *RelayForwarder) forwardToTunnel(clientConn net.Conn, stream *relay.Stream, done chan struct{}) {
+	defer func() { done <- struct{}{} }()
+
+	// 使用 buffer pool
+	buf := relay.GetBuffer()
+	defer relay.PutBuffer(buf)
+
+	for {
+		// 直接读取到 buffer 的 payload 区域
+		n, err := clientConn.Read((*buf)[relay.HeaderSize:])
+		if err != nil {
+			return
+		}
+
+		// 构建消息并发送
+		msg := &relay.TunnelMessage{
+			Type:     relay.MsgTypeData,
+			StreamID: stream.ID,
+			Payload:  (*buf)[relay.HeaderSize : relay.HeaderSize+n],
+		}
+
+		if err := f.wsConn.Send(msg); err != nil {
+			return
+		}
+	}
+}
+
+// forwardFromTunnel 从隧道转发到客户端
+func (f *RelayForwarder) forwardFromTunnel(clientConn net.Conn, stream *relay.Stream, done chan struct{}) {
+	defer func() { done <- struct{}{} }()
+
+	for {
+		select {
+		case data := <-stream.DataCh:
+			if _, err := clientConn.Write(data); err != nil {
+				return
+			}
+		case <-stream.CloseCh:
+			return
+		}
+	}
 }

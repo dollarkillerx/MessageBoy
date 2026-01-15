@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/dollarkillerx/MessageBoy/internal/conf"
+	"github.com/dollarkillerx/MessageBoy/pkg/model"
 )
 
 type Storage struct {
@@ -43,15 +44,16 @@ func NewStorage(cfg *conf.DatabaseConfig) (*Storage, error) {
 	sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
 
 	// 自动迁移
-	// if err := db.AutoMigrate(
-	// 	&model.Client{},
-	// 	&model.ForwardRule{},
-	// 	&model.ProxyGroup{},
-	// 	&model.ProxyGroupNode{},
-	// 	&model.TrafficStats{},
-	// ); err != nil {
-	// 	return nil, fmt.Errorf("failed to migrate database: %w", err)
-	// }
+	if err := db.AutoMigrate(
+		&model.Client{},
+		&model.ForwardRule{},
+		&model.ProxyGroup{},
+		&model.ProxyGroupNode{},
+		&model.TrafficStats{},
+	); err != nil {
+		log.Error().Err(err).Msg("Failed to migrate database")
+		// return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
 
 	log.Info().Msg("Database connected and migrated successfully")
 

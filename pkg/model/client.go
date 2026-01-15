@@ -28,6 +28,7 @@ type Client struct {
 	// 连接状态
 	Status   ClientStatus `json:"status" gorm:"size:20"`
 	LastIP   string       `json:"last_ip" gorm:"size:45"`
+	RelayIP  string       `json:"relay_ip" gorm:"size:45"` // 客户端配置的中继地址，为空时使用 LastIP
 	LastSeen *time.Time   `json:"last_seen"`
 	Hostname string       `json:"hostname" gorm:"size:255"`
 	Version  string       `json:"version" gorm:"size:20"`
@@ -48,4 +49,12 @@ func (c *Client) SetDefaults() {
 	if c.Status == "" {
 		c.Status = ClientStatusOffline
 	}
+}
+
+// GetRelayAddr 获取中继地址（优先使用配置的 RelayIP，否则使用 LastIP）
+func (c *Client) GetRelayAddr() string {
+	if c.RelayIP != "" {
+		return c.RelayIP
+	}
+	return c.LastIP
 }

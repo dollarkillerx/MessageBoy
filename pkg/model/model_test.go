@@ -92,6 +92,26 @@ func TestClientSetDefaults(t *testing.T) {
 	}
 }
 
+func TestClientGetRelayAddr(t *testing.T) {
+	// 测试 RelayIP 为空时返回 LastIP
+	c1 := &Client{LastIP: "192.168.1.100", RelayIP: ""}
+	if c1.GetRelayAddr() != "192.168.1.100" {
+		t.Errorf("expected '192.168.1.100', got '%s'", c1.GetRelayAddr())
+	}
+
+	// 测试 RelayIP 不为空时返回 RelayIP
+	c2 := &Client{LastIP: "192.168.1.100", RelayIP: "10.0.0.1"}
+	if c2.GetRelayAddr() != "10.0.0.1" {
+		t.Errorf("expected '10.0.0.1', got '%s'", c2.GetRelayAddr())
+	}
+
+	// 测试两者都为空
+	c3 := &Client{LastIP: "", RelayIP: ""}
+	if c3.GetRelayAddr() != "" {
+		t.Errorf("expected empty string, got '%s'", c3.GetRelayAddr())
+	}
+}
+
 func TestForwardRuleSetDefaults(t *testing.T) {
 	r := &ForwardRule{}
 	r.SetDefaults()
