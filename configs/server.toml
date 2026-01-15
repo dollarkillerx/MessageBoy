@@ -2,17 +2,17 @@
 
 [Server]
 Host = "0.0.0.0"
-Port = 8080
+Port = 8283
 Debug = true
 ExternalURL = "https://messagebody.cnbaidu.org"
 InstallScriptURL = "https://fileoss.hacksnews.top/message-boy-install.sh"
 
 [Database]
-Host = "localhost"
-Port = 18432
+Host = "127.0.0.1"
+Port = 5532
 User = "pacman"
-Password = "MEB3oZZkpxgA1q4WcA10"
-DBName = "pacman"
+Password = "Kw7dQwFnLGAe2"
+DBName = "message_boy"
 SSLMode = "disable"
 MaxIdleConns = 10
 MaxOpenConns = 100
@@ -25,7 +25,7 @@ Issuer = "messageboy"
 
 [Admin]
 Username = "admin"
-Password = "admin123"
+Password = "aRApNoPKXH1iWAoRwMNe"
 
 [WebSocket]
 Endpoint = "/ws"
