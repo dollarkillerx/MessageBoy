@@ -17,10 +17,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host        string `mapstructure:"Host"`
-	Port        int    `mapstructure:"Port"`
-	Debug       bool   `mapstructure:"Debug"`
-	ExternalURL string `mapstructure:"ExternalURL"`
+	Host             string `mapstructure:"Host"`
+	Port             int    `mapstructure:"Port"`
+	Debug            bool   `mapstructure:"Debug"`
+	ExternalURL      string `mapstructure:"ExternalURL"`
+	InstallScriptURL string `mapstructure:"InstallScriptURL"`
 }
 
 type DatabaseConfig struct {
@@ -92,6 +93,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("Server.Port", 8080)
 	v.SetDefault("Server.Debug", false)
 	v.SetDefault("Server.ExternalURL", "http://localhost:8080")
+	v.SetDefault("Server.InstallScriptURL", "https://fileoss.hacksnews.top/install.sh")
 
 	// Database defaults
 	v.SetDefault("Database.Host", "localhost")

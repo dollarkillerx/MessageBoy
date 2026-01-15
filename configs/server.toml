@@ -4,7 +4,8 @@
 Host = "0.0.0.0"
 Port = 8080
 Debug = true
-ExternalURL = "http://localhost:8080"
+ExternalURL = "https://messagebody.cnbaidu.org"
+InstallScriptURL = "https://fileoss.hacksnews.top/message-boy-install.sh"
 
 [Database]
 Host = "localhost"

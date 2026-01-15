@@ -1,41 +1,9 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: messageboy-postgres
-    environment:
-      POSTGRES_USER: messageboy
-      POSTGRES_PASSWORD: messageboy
-      POSTGRES_DB: messageboy
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U messageboy"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
+  messageboy-server:
+    image: messageboy-server:latest
     container_name: messageboy-server
-    depends_on:
-      postgres:
-        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      - MB_DATABASE_HOST=postgres
-      - MB_DATABASE_PORT=5432
-      - MB_DATABASE_USER=messageboy
-      - MB_DATABASE_PASSWORD=messageboy
-      - MB_DATABASE_DBNAME=messageboy
     volumes:
       - ./configs/server.toml:/app/configs/server.toml:ro
-
-volumes:
-  postgres_data:

@@ -71,8 +71,8 @@ export const regenerateClientToken = (id: string) =>
   rpcCall<import('../types').Client>('regenerateClientToken', { id })
 
 export const getClientInstallCommand = async (id: string) => {
-  const result = await rpcCall<{ install_command: string; manual_command: string }>('getClientInstallCommand', { id })
-  return { command: result.install_command, manualCommand: result.manual_command }
+  const result = await rpcCall<{ command: string }>('getClientInstallCommand', { id })
+  return result
 }
 
 // Forward Rules

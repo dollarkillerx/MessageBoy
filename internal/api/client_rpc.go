@@ -85,8 +85,8 @@ func (m *CreateClientMethod) Execute(ctx context.Context, params json.RawMessage
 
 func (m *CreateClientMethod) generateInstallCommand(token string) string {
 	return fmt.Sprintf(
-		"curl -sSL %s/install.sh | bash -s -- --server %s --token %s",
-		m.cfg.Server.ExternalURL, m.cfg.Server.ExternalURL, token,
+		"curl -sSL %s | bash -s -- --server %s --token %s",
+		m.cfg.Server.InstallScriptURL, m.cfg.Server.ExternalURL, token,
 	)
 }
 
@@ -378,8 +378,8 @@ func (m *RegenerateClientTokenMethod) Execute(ctx context.Context, params json.R
 
 func (m *RegenerateClientTokenMethod) generateInstallCommand(token string) string {
 	return fmt.Sprintf(
-		"curl -sSL %s/install.sh | bash -s -- --server %s --token %s",
-		m.cfg.Server.ExternalURL, m.cfg.Server.ExternalURL, token,
+		"curl -sSL %s | bash -s -- --server %s --token %s",
+		m.cfg.Server.InstallScriptURL, m.cfg.Server.ExternalURL, token,
 	)
 }
 
@@ -420,13 +420,9 @@ func (m *GetClientInstallCommandMethod) Execute(ctx context.Context, params json
 	}
 
 	return map[string]interface{}{
-		"install_command": fmt.Sprintf(
-			"curl -sSL %s/install.sh | bash -s -- --server %s --token %s",
-			m.cfg.Server.ExternalURL, m.cfg.Server.ExternalURL, client.Token,
-		),
-		"manual_command": fmt.Sprintf(
-			"./messageboy-client --server %s --token %s",
-			m.cfg.Server.ExternalURL, client.Token,
+		"command": fmt.Sprintf(
+			"curl -sSL %s | bash -s -- --server %s --token %s",
+			m.cfg.Server.InstallScriptURL, m.cfg.Server.ExternalURL, client.Token,
 		),
 	}, nil
 }
