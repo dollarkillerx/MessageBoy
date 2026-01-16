@@ -26,6 +26,7 @@ type TrafficReport struct {
 	BytesIn     int64  `json:"bytes_in"`
 	BytesOut    int64  `json:"bytes_out"`
 	Connections int64  `json:"connections"`
+	ActiveConns int32  `json:"active_conns"`
 }
 
 func NewTrafficCounter() *TrafficCounter {
@@ -91,14 +92,16 @@ func (tc *TrafficCounter) GetAndReset() []TrafficReport {
 		bytesIn := atomic.SwapInt64(&stat.BytesIn, 0)
 		bytesOut := atomic.SwapInt64(&stat.BytesOut, 0)
 		conns := atomic.SwapInt64(&stat.Connections, 0)
+		activeConns := atomic.LoadInt32(&stat.ActiveConns) // 读取当前活跃连接数（不重置）
 
-		// 只上报有流量的规则
-		if bytesIn > 0 || bytesOut > 0 || conns > 0 {
+		// 上报有流量或有活跃连接的规则
+		if bytesIn > 0 || bytesOut > 0 || conns > 0 || activeConns > 0 {
 			reports = append(reports, TrafficReport{
 				RuleID:      ruleID,
 				BytesIn:     bytesIn,
 				BytesOut:    bytesOut,
 				Connections: conns,
+				ActiveConns: activeConns,
 			})
 		}
 	}

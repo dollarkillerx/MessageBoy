@@ -104,6 +104,12 @@ func (r *TrafficRepository) DecrementConn(ruleID, clientID string) {
 	atomic.AddInt32(&stats.ActiveConns, -1)
 }
 
+// SetActiveConns 设置活跃连接数（用于客户端上报）
+func (r *TrafficRepository) SetActiveConns(ruleID, clientID string, count int32) {
+	stats := r.getOrCreateStats(ruleID, clientID)
+	atomic.StoreInt32(&stats.ActiveConns, count)
+}
+
 // FlushToDatabase 将内存统计刷新到数据库 (只刷新流量，连接数保留在内存)
 func (r *TrafficRepository) FlushToDatabase() error {
 	r.mu.Lock()

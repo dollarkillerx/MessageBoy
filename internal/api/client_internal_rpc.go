@@ -237,6 +237,7 @@ type TrafficReportItem struct {
 	BytesIn     int64  `json:"bytes_in"`
 	BytesOut    int64  `json:"bytes_out"`
 	Connections int64  `json:"connections"`
+	ActiveConns int32  `json:"active_conns"`
 }
 
 type ClientReportTrafficParams struct {
@@ -254,7 +255,7 @@ func (m *ClientReportTrafficMethod) Execute(ctx context.Context, params json.Raw
 		return nil, errors.New("client_id is required")
 	}
 
-	// 累加流量到统计器
+	// 累加流量到统计器，并设置活跃连接数
 	for _, report := range p.Reports {
 		if report.BytesIn > 0 {
 			m.storage.Traffic.AddBytesIn(report.RuleID, p.ClientID, report.BytesIn)
@@ -262,6 +263,8 @@ func (m *ClientReportTrafficMethod) Execute(ctx context.Context, params json.Raw
 		if report.BytesOut > 0 {
 			m.storage.Traffic.AddBytesOut(report.RuleID, p.ClientID, report.BytesOut)
 		}
+		// 设置活跃连接数（直接覆盖，因为这是客户端的实时状态）
+		m.storage.Traffic.SetActiveConns(report.RuleID, p.ClientID, report.ActiveConns)
 	}
 
 	return map[string]interface{}{
