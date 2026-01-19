@@ -1,7 +1,11 @@
 import axios from 'axios'
 import type { RpcRequest, RpcResponse } from '../types'
+import router from '../router'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
+
+// RPC 错误码
+const ErrCodeAuthRequired = -32001
 
 let requestId = 0
 
@@ -24,6 +28,11 @@ export async function rpcCall<T>(method: string, params: Record<string, unknown>
   const response = await axios.post<RpcResponse<T>>(`${API_BASE}/api/rpc`, request, { headers })
 
   if (response.data.error) {
+    // Token 失效或未认证，跳转到登录页面
+    if (response.data.error.code === ErrCodeAuthRequired) {
+      localStorage.removeItem('token')
+      router.push('/login')
+    }
     throw new Error(response.data.error.message)
   }
 
