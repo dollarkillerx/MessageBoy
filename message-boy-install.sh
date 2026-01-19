@@ -43,6 +43,18 @@ echo "正在安装 MessageBoy Client..."
 echo "服务器: $SERVER_URL"
 echo ""
 
+# 检查服务是否已存在，如果存在则停止并清理
+if systemctl is-active --quiet ${SERVICE_NAME} 2>/dev/null; then
+    echo "检测到服务正在运行，停止服务..."
+    systemctl stop ${SERVICE_NAME}
+fi
+
+# 如果旧的二进制文件存在，删除它
+if [ -f "${INSTALL_DIR}/messageboy-client" ]; then
+    echo "删除旧版本..."
+    rm -f ${INSTALL_DIR}/messageboy-client
+fi
+
 # 创建安装目录
 mkdir -p ${INSTALL_DIR}
 
