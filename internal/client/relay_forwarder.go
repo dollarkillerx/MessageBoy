@@ -21,6 +21,7 @@ type RelayForwarder struct {
 
 	wsConn         *relay.WSClientConn
 	listener       net.Listener
+	listenerMu     sync.Mutex
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
 	trafficCounter *TrafficCounter
@@ -52,7 +53,9 @@ func (f *RelayForwarder) Start() error {
 		}
 		return err
 	}
+	f.listenerMu.Lock()
 	f.listener = listener
+	f.listenerMu.Unlock()
 
 	// 上报运行状态
 	if f.statusCallback != nil {
@@ -92,9 +95,11 @@ func (f *RelayForwarder) Start() error {
 // Stop 停止转发器
 func (f *RelayForwarder) Stop() {
 	close(f.stopCh)
+	f.listenerMu.Lock()
 	if f.listener != nil {
 		f.listener.Close()
 	}
+	f.listenerMu.Unlock()
 	f.wg.Wait()
 }
 

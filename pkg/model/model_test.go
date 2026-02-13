@@ -383,6 +383,49 @@ func TestForwardRuleJSONSerialization(t *testing.T) {
 	}
 }
 
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1023, "1023 B"},
+		{1024, "1.00 KB"},
+		{1536, "1.50 KB"},
+		{1048576, "1.00 MB"},
+		{1073741824, "1.00 GB"},
+		{1099511627776, "1.00 TB"},
+	}
+
+	for _, tc := range tests {
+		got := FormatBytes(tc.input)
+		if got != tc.expected {
+			t.Errorf("FormatBytes(%d) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestFormatBandwidth(t *testing.T) {
+	tests := []struct {
+		bytesPerSec int64
+		expected    string
+	}{
+		{0, "0 bps"},
+		{100, "800 bps"},
+		{125, "1.00 Kbps"},
+		{125000, "1.00 Mbps"},
+		{125000000, "1.00 Gbps"},
+	}
+
+	for _, tc := range tests {
+		got := FormatBandwidth(tc.bytesPerSec)
+		if got != tc.expected {
+			t.Errorf("FormatBandwidth(%d) = %q, want %q", tc.bytesPerSec, got, tc.expected)
+		}
+	}
+}
+
 func TestProxyGroupJSONSerialization(t *testing.T) {
 	group := ProxyGroup{
 		ID:                "group-id",

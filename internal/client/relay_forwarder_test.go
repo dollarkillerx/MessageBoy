@@ -4,6 +4,8 @@ import (
 	"net"
 	"sync"
 	"testing"
+
+	"github.com/dollarkillerx/MessageBoy/internal/relay"
 )
 
 func TestRelayForwarderStatusCallback_Error(t *testing.T) {
@@ -107,5 +109,112 @@ func TestRelayForwarderWithNilCallback(t *testing.T) {
 
 	if f.statusCallback != nil {
 		t.Error("Expected statusCallback to be nil")
+	}
+}
+
+func TestRelayForwarder_GetConfigHash(t *testing.T) {
+	tests := []struct {
+		name       string
+		listenAddr string
+		exitAddr   string
+		chain      []string
+		expected   string
+	}{
+		{
+			name:       "empty chain",
+			listenAddr: ":8080",
+			exitAddr:   "10.0.0.1:80",
+			chain:      []string{},
+			expected:   "relay::8080:10.0.0.1:80:",
+		},
+		{
+			name:       "single chain",
+			listenAddr: ":8080",
+			exitAddr:   "10.0.0.1:80",
+			chain:      []string{"c1"},
+			expected:   "relay::8080:10.0.0.1:80:c1,",
+		},
+		{
+			name:       "two chain",
+			listenAddr: ":8080",
+			exitAddr:   "10.0.0.1:80",
+			chain:      []string{"c1", "c2"},
+			expected:   "relay::8080:10.0.0.1:80:c1,c2,",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewRelayForwarder("r1", tc.listenAddr, tc.exitAddr, tc.chain, ForwarderSection{}, nil, nil, nil)
+			if got := f.GetConfigHash(); got != tc.expected {
+				t.Errorf("GetConfigHash() = %q, want %q", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestRelayForwarder_GetListenAddr(t *testing.T) {
+	f := NewRelayForwarder("r1", ":9090", "10.0.0.1:80", nil, ForwarderSection{}, nil, nil, nil)
+	if got := f.GetListenAddr(); got != ":9090" {
+		t.Errorf("GetListenAddr() = %q, want %q", got, ":9090")
+	}
+}
+
+func TestRelayForwarder_StopBeforeStart(t *testing.T) {
+	f := NewRelayForwarder("r1", "127.0.0.1:0", "10.0.0.1:80", nil, ForwarderSection{}, nil, nil, nil)
+	// Should not panic
+	f.Stop()
+}
+
+func TestRelayForwarder_WaitForConnAck_Timeout(t *testing.T) {
+	cfg := ForwarderSection{ConnectTimeout: 1}
+	f := NewRelayForwarder("r1", ":0", "10.0.0.1:80", nil, cfg, nil, nil, nil)
+
+	stream := &relay.Stream{
+		DataCh:  make(chan []byte, 1),
+		CloseCh: make(chan struct{}),
+	}
+
+	result := f.waitForConnAck(stream)
+	if result {
+		t.Error("expected false (timeout), got true")
+	}
+}
+
+func TestRelayForwarder_WaitForConnAck_Success(t *testing.T) {
+	cfg := ForwarderSection{ConnectTimeout: 5}
+	f := NewRelayForwarder("r1", ":0", "10.0.0.1:80", nil, cfg, nil, nil, nil)
+
+	stream := &relay.Stream{
+		DataCh:  make(chan []byte, 1),
+		CloseCh: make(chan struct{}),
+	}
+
+	go func() {
+		stream.DataCh <- []byte{relay.MsgTypeConnAck}
+	}()
+
+	result := f.waitForConnAck(stream)
+	if !result {
+		t.Error("expected true (ConnAck), got false")
+	}
+}
+
+func TestRelayForwarder_WaitForConnAck_Error(t *testing.T) {
+	cfg := ForwarderSection{ConnectTimeout: 5}
+	f := NewRelayForwarder("r1", ":0", "10.0.0.1:80", nil, cfg, nil, nil, nil)
+
+	stream := &relay.Stream{
+		DataCh:  make(chan []byte, 1),
+		CloseCh: make(chan struct{}),
+	}
+
+	go func() {
+		stream.DataCh <- []byte{relay.MsgTypeError}
+	}()
+
+	result := f.waitForConnAck(stream)
+	if result {
+		t.Error("expected false (error), got true")
 	}
 }

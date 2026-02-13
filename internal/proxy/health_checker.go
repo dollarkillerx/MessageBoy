@@ -11,10 +11,25 @@ import (
 	"github.com/dollarkillerx/MessageBoy/pkg/model"
 )
 
+// ProxyGroupStore abstracts proxy group storage operations for testability.
+type ProxyGroupStore interface {
+	List(params storage.ProxyGroupListParams) ([]model.ProxyGroup, int64, error)
+	GetNodesByGroupID(groupID string) ([]model.ProxyGroupNode, error)
+	GetNode(id string) (*model.ProxyGroupNode, error)
+	GetByID(id string) (*model.ProxyGroup, error)
+	UpdateNodeHealth(nodeID string, healthy bool) error
+	MarkNodeUnhealthy(nodeID string) error
+}
+
+// ClientChecker abstracts online-status checking for testability.
+type ClientChecker interface {
+	IsClientOnline(clientID string) bool
+}
+
 // HealthChecker 健康检查器
 type HealthChecker struct {
-	storage  *storage.Storage
-	wsServer *relay.WSServer
+	proxyStore  ProxyGroupStore
+	clientCheck ClientChecker
 
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -23,10 +38,10 @@ type HealthChecker struct {
 
 func NewHealthChecker(s *storage.Storage, ws *relay.WSServer) *HealthChecker {
 	return &HealthChecker{
-		storage:  s,
-		wsServer: ws,
-		stopCh:   make(chan struct{}),
-		interval: 10 * time.Second, // 默认检查间隔
+		proxyStore:  s.ProxyGroup,
+		clientCheck: ws,
+		stopCh:      make(chan struct{}),
+		interval:    10 * time.Second, // 默认检查间隔
 	}
 }
 
@@ -62,7 +77,7 @@ func (h *HealthChecker) run() {
 }
 
 func (h *HealthChecker) checkAllGroups() {
-	groups, _, err := h.storage.ProxyGroup.List(storage.ProxyGroupListParams{
+	groups, _, err := h.proxyStore.List(storage.ProxyGroupListParams{
 		Page:  1,
 		Limit: 1000,
 	})
@@ -80,7 +95,7 @@ func (h *HealthChecker) checkAllGroups() {
 }
 
 func (h *HealthChecker) checkGroup(group *model.ProxyGroup) {
-	nodes, err := h.storage.ProxyGroup.GetNodesByGroupID(group.ID)
+	nodes, err := h.proxyStore.GetNodesByGroupID(group.ID)
 	if err != nil {
 		log.Warn().Err(err).Str("group_id", group.ID).Msg("Failed to get nodes for health check")
 		return
@@ -93,19 +108,19 @@ func (h *HealthChecker) checkGroup(group *model.ProxyGroup) {
 
 func (h *HealthChecker) checkNode(group *model.ProxyGroup, node *model.ProxyGroupNode) {
 	// 检查 client 是否在线 (通过 WebSocket 连接状态)
-	isOnline := h.wsServer.IsClientOnline(node.ClientID)
+	isOnline := h.clientCheck.IsClientOnline(node.ClientID)
 
 	// 更新健康状态
-	if err := h.storage.ProxyGroup.UpdateNodeHealth(node.ID, isOnline); err != nil {
+	if err := h.proxyStore.UpdateNodeHealth(node.ID, isOnline); err != nil {
 		log.Warn().Err(err).Str("node_id", node.ID).Msg("Failed to update node health")
 		return
 	}
 
 	// 如果连续失败次数超过阈值，标记为不健康
 	if !isOnline {
-		newNode, _ := h.storage.ProxyGroup.GetNode(node.ID)
+		newNode, _ := h.proxyStore.GetNode(node.ID)
 		if newNode != nil && newNode.FailCount >= group.HealthCheckRetries {
-			h.storage.ProxyGroup.MarkNodeUnhealthy(node.ID)
+			h.proxyStore.MarkNodeUnhealthy(node.ID)
 			log.Warn().
 				Str("node_id", node.ID).
 				Str("client_id", node.ClientID).
@@ -122,12 +137,12 @@ func (h *HealthChecker) checkNode(group *model.ProxyGroup, node *model.ProxyGrou
 
 // CheckNodeHealth 手动检查单个节点健康状态
 func (h *HealthChecker) CheckNodeHealth(nodeID string) error {
-	node, err := h.storage.ProxyGroup.GetNode(nodeID)
+	node, err := h.proxyStore.GetNode(nodeID)
 	if err != nil {
 		return err
 	}
 
-	group, err := h.storage.ProxyGroup.GetByID(node.GroupID)
+	group, err := h.proxyStore.GetByID(node.GroupID)
 	if err != nil {
 		return err
 	}

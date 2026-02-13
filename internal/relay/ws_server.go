@@ -2,12 +2,19 @@ package relay
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 )
+
+// routeKey builds a composite route key from clientID and streamID.
+func routeKey(clientID string, streamID uint32) string {
+	return clientID + ":" + strconv.FormatUint(uint64(streamID), 10)
+}
 
 // LoadBalancerInterface 负载均衡器接口 (避免循环依赖)
 type LoadBalancerInterface interface {
@@ -40,9 +47,8 @@ type WSServer struct {
 	clients map[string]*WSClient
 	mu      sync.RWMutex
 
-	// 路由表: streamID -> 路由信息
-	routes   map[uint32]*RouteInfo
-	routesMu sync.RWMutex
+	// 路由表: "clientID:streamID" -> *RouteInfo
+	routes sync.Map
 
 	// 负载均衡器
 	loadBalancer LoadBalancerInterface
@@ -77,18 +83,23 @@ func (s *WSServer) SetTrafficCounter(tc TrafficCounterInterface) {
 }
 
 type WSClient struct {
-	ID       string
-	Conn     *websocket.Conn
-	SendCh   chan *sendItem
-	CloseCh  chan struct{}
-	closed   bool
-	mu       sync.Mutex
+	ID              string
+	Conn            *websocket.Conn
+	SendCh          chan *sendItem
+	CloseCh         chan struct{}
+	closed          bool
+	mu              sync.Mutex
+	droppedMessages int64
+}
+
+// DroppedMessages returns the number of dropped messages
+func (c *WSClient) DroppedMessages() int64 {
+	return atomic.LoadInt64(&c.droppedMessages)
 }
 
 func NewWSServer() *WSServer {
 	return &WSServer{
 		clients:           make(map[string]*WSClient),
-		routes:            make(map[uint32]*RouteInfo),
 		pendingPortChecks: make(map[uint32]chan *PortCheckResult),
 	}
 }
@@ -109,7 +120,7 @@ func (s *WSServer) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	client := &WSClient{
 		ID:      clientID,
 		Conn:    conn,
-		SendCh:  make(chan *sendItem, 512), // 增大缓冲
+		SendCh:  make(chan *sendItem, 2048),
 		CloseCh: make(chan struct{}),
 	}
 
@@ -127,7 +138,10 @@ func (s *WSServer) HandleConnection(w http.ResponseWriter, r *http.Request) {
 	client.readPump(s)
 
 	s.mu.Lock()
-	delete(s.clients, clientID)
+	// Only delete if this is still our client (not replaced by a new connection)
+	if s.clients[clientID] == client {
+		delete(s.clients, clientID)
+	}
 	s.mu.Unlock()
 
 	// 清理该 client 相关的路由
@@ -160,13 +174,16 @@ func (s *WSServer) SendMsgToClient(clientID string, msg *TunnelMessage) bool {
 }
 
 func (s *WSServer) cleanupRoutesForClient(clientID string) {
-	s.routesMu.Lock()
-	defer s.routesMu.Unlock()
-
-	for streamID, route := range s.routes {
+	var toCleanup []*RouteInfo
+	s.routes.Range(func(key, value any) bool {
+		route := value.(*RouteInfo)
 		if route.SourceClientID == clientID || route.TargetClientID == clientID {
-			delete(s.routes, streamID)
+			toCleanup = append(toCleanup, route)
 		}
+		return true
+	})
+	for _, route := range toCleanup {
+		s.cleanupRoute(route)
 	}
 }
 
@@ -267,8 +284,7 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 	}
 
 	// 保存路由信息
-	s.routesMu.Lock()
-	s.routes[msg.StreamID] = &RouteInfo{
+	route := &RouteInfo{
 		SourceClientID: sourceClientID,
 		TargetClientID: targetClientID,
 		StreamID:       msg.StreamID,
@@ -276,7 +292,8 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 		NodeID:         nodeID,
 		RuleID:         msg.RuleID,
 	}
-	s.routesMu.Unlock()
+	s.routes.Store(routeKey(sourceClientID, msg.StreamID), route)
+	s.routes.Store(routeKey(targetClientID, msg.StreamID), route)
 
 	// 统计连接数
 	if s.trafficCounter != nil && msg.RuleID != "" {
@@ -294,7 +311,7 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 	if !targetClient.SendMsg(forwardMsg) {
 		log.Warn().Str("target", targetClientID).Msg("Failed to send to target client")
 		s.sendError(sourceClientID, msg.StreamID, "failed to send to target")
-		s.cleanupRoute(msg.StreamID)
+		s.cleanupRoute(route)
 	} else {
 		log.Debug().
 			Str("source", sourceClientID).
@@ -306,17 +323,9 @@ func (s *WSServer) handleConnect(sourceClientID string, msg *TunnelMessage) {
 }
 
 // cleanupRoute 清理路由并减少节点连接计数
-func (s *WSServer) cleanupRoute(streamID uint32) {
-	s.routesMu.Lock()
-	route, ok := s.routes[streamID]
-	if ok {
-		delete(s.routes, streamID)
-	}
-	s.routesMu.Unlock()
-
-	if !ok {
-		return
-	}
+func (s *WSServer) cleanupRoute(route *RouteInfo) {
+	s.routes.Delete(routeKey(route.SourceClientID, route.StreamID))
+	s.routes.Delete(routeKey(route.TargetClientID, route.StreamID))
 
 	// 减少节点连接计数
 	if route.NodeID != "" && s.loadBalancer != nil {
@@ -331,14 +340,12 @@ func (s *WSServer) cleanupRoute(streamID uint32) {
 
 // handleConnAck 处理连接确认 - 路由回源 Client
 func (s *WSServer) handleConnAck(fromClientID string, msg *TunnelMessage) {
-	s.routesMu.RLock()
-	route, ok := s.routes[msg.StreamID]
-	s.routesMu.RUnlock()
-
+	v, ok := s.routes.Load(routeKey(fromClientID, msg.StreamID))
 	if !ok {
 		log.Warn().Uint32("stream_id", msg.StreamID).Msg("No route found for ConnAck")
 		return
 	}
+	route := v.(*RouteInfo)
 
 	// ConnAck 应该从 Target 发往 Source
 	if fromClientID != route.TargetClientID {
@@ -366,14 +373,12 @@ func (s *WSServer) handleConnAck(fromClientID string, msg *TunnelMessage) {
 
 // handleData 处理数据消息 - 双向路由
 func (s *WSServer) handleData(fromClientID string, msg *TunnelMessage) {
-	s.routesMu.RLock()
-	route, ok := s.routes[msg.StreamID]
-	s.routesMu.RUnlock()
-
+	v, ok := s.routes.Load(routeKey(fromClientID, msg.StreamID))
 	if !ok {
 		log.Debug().Uint32("stream_id", msg.StreamID).Msg("No route found for data")
 		return
 	}
+	route := v.(*RouteInfo)
 
 	// 确定转发目标和流量方向
 	var targetClientID string
@@ -413,13 +418,11 @@ func (s *WSServer) handleData(fromClientID string, msg *TunnelMessage) {
 
 // handleClose 处理关闭消息
 func (s *WSServer) handleClose(fromClientID string, msg *TunnelMessage) {
-	s.routesMu.RLock()
-	route, ok := s.routes[msg.StreamID]
-	s.routesMu.RUnlock()
-
+	v, ok := s.routes.Load(routeKey(fromClientID, msg.StreamID))
 	if !ok {
 		return
 	}
+	route := v.(*RouteInfo)
 
 	// 转发关闭消息到对端（零拷贝）
 	var targetClientID string
@@ -432,20 +435,18 @@ func (s *WSServer) handleClose(fromClientID string, msg *TunnelMessage) {
 	s.SendMsgToClient(targetClientID, msg)
 
 	// 清理路由 (包括减少节点连接计数)
-	s.cleanupRoute(msg.StreamID)
+	s.cleanupRoute(route)
 
 	log.Debug().Uint32("stream_id", msg.StreamID).Msg("Route closed")
 }
 
 // handleError 处理错误消息
 func (s *WSServer) handleError(fromClientID string, msg *TunnelMessage) {
-	s.routesMu.RLock()
-	route, ok := s.routes[msg.StreamID]
-	s.routesMu.RUnlock()
-
+	v, ok := s.routes.Load(routeKey(fromClientID, msg.StreamID))
 	if !ok {
 		return
 	}
+	route := v.(*RouteInfo)
 
 	// 转发错误消息到对端（零拷贝）
 	var targetClientID string
@@ -470,7 +471,7 @@ func (s *WSServer) handleError(fromClientID string, msg *TunnelMessage) {
 	}
 
 	// 清理路由 (包括减少节点连接计数)
-	s.cleanupRoute(msg.StreamID)
+	s.cleanupRoute(route)
 }
 
 func (s *WSServer) sendError(clientID string, streamID uint32, errMsg string) {
@@ -635,7 +636,7 @@ func (c *WSClient) Send(data []byte) bool {
 	}
 	c.mu.Unlock()
 
-	buf := GetBuffer()
+	buf := GetBufferForSize(len(data))
 	if len(data) > len(*buf) {
 		PutBuffer(buf)
 		return false
@@ -647,6 +648,7 @@ func (c *WSClient) Send(data []byte) bool {
 		return true
 	default:
 		PutBuffer(buf)
+		atomic.AddInt64(&c.droppedMessages, 1)
 		return false
 	}
 }
@@ -660,7 +662,7 @@ func (c *WSClient) SendMsg(msg *TunnelMessage) bool {
 	}
 	c.mu.Unlock()
 
-	buf := GetBuffer()
+	buf := GetBufferForSize(msg.calcPayloadSize())
 	n, err := msg.MarshalTo(*buf)
 	if err != nil {
 		PutBuffer(buf)
@@ -672,6 +674,7 @@ func (c *WSClient) SendMsg(msg *TunnelMessage) bool {
 		return true
 	default:
 		PutBuffer(buf)
+		atomic.AddInt64(&c.droppedMessages, 1)
 		return false
 	}
 }

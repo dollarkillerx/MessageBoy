@@ -10,14 +10,24 @@ import (
 )
 
 type AESCrypto struct {
-	key []byte
+	key   []byte
+	block cipher.Block
+	gcm   cipher.AEAD
 }
 
 func NewAESCrypto(key []byte) (*AESCrypto, error) {
 	if len(key) != 32 {
 		return nil, errors.New("key must be 32 bytes for AES-256")
 	}
-	return &AESCrypto{key: key}, nil
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &AESCrypto{key: key, block: block, gcm: gcm}, nil
 }
 
 func NewAESCryptoFromHex(hexKey string) (*AESCrypto, error) {
@@ -34,7 +44,15 @@ func NewAESCryptoFromHex(hexKey string) (*AESCrypto, error) {
 	} else if len(key) > 32 {
 		key = key[:32]
 	}
-	return &AESCrypto{key: key}, nil
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &AESCrypto{key: key, block: block, gcm: gcm}, nil
 }
 
 func GenerateKey() ([]byte, error) {
@@ -54,37 +72,17 @@ func GenerateKeyBase64() (string, error) {
 }
 
 func (c *AESCrypto) Encrypt(plaintext []byte) (ciphertext, nonce []byte, err error) {
-	block, err := aes.NewCipher(c.key)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nonce = make([]byte, gcm.NonceSize())
+	nonce = make([]byte, c.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, nil, err
 	}
 
-	ciphertext = gcm.Seal(nil, nonce, plaintext, nil)
+	ciphertext = c.gcm.Seal(nil, nonce, plaintext, nil)
 	return ciphertext, nonce, nil
 }
 
 func (c *AESCrypto) Decrypt(ciphertext, nonce []byte) (plaintext []byte, err error) {
-	block, err := aes.NewCipher(c.key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	return c.gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 func (c *AESCrypto) EncryptToBase64(plaintext []byte) (ciphertextB64, nonceB64 string, err error) {

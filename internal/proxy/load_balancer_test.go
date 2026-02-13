@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"errors"
+	"sync"
 	"testing"
 
 	"github.com/dollarkillerx/MessageBoy/pkg/model"
@@ -139,5 +141,261 @@ func TestParseGroupReference(t *testing.T) {
 		if result != test.expected {
 			t.Errorf("ParseGroupReference(%q) = %q, expected %q", test.input, result, test.expected)
 		}
+	}
+}
+
+// --- mockProxyGroupReader implements ProxyGroupReader for testing ---
+
+type mockProxyGroupReader struct {
+	mu           sync.Mutex
+	groups       map[string]*model.ProxyGroup
+	groupsByName map[string]*model.ProxyGroup
+	healthyNodes map[string][]model.ProxyGroupNode
+	incrCalls    []string
+	decrCalls    []string
+}
+
+func (m *mockProxyGroupReader) GetByID(id string) (*model.ProxyGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.groups[id]
+	if !ok {
+		return nil, errors.New("group not found")
+	}
+	return g, nil
+}
+
+func (m *mockProxyGroupReader) GetByName(name string) (*model.ProxyGroup, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.groupsByName[name]
+	if !ok {
+		return nil, errors.New("group not found by name")
+	}
+	return g, nil
+}
+
+func (m *mockProxyGroupReader) GetHealthyNodesByGroupID(groupID string) ([]model.ProxyGroupNode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nodes, ok := m.healthyNodes[groupID]
+	if !ok {
+		return nil, nil
+	}
+	return nodes, nil
+}
+
+func (m *mockProxyGroupReader) IncrementNodeConns(nodeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incrCalls = append(m.incrCalls, nodeID)
+	return nil
+}
+
+func (m *mockProxyGroupReader) DecrementNodeConns(nodeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.decrCalls = append(m.decrCalls, nodeID)
+	return nil
+}
+
+func TestNewLoadBalancer(t *testing.T) {
+	lb := &LoadBalancer{
+		proxyStore: &mockProxyGroupReader{},
+		rrCounters: make(map[string]*uint64),
+	}
+
+	if lb.rrCounters == nil {
+		t.Error("expected rrCounters to be initialized")
+	}
+	if lb.proxyStore == nil {
+		t.Error("expected proxyStore to be set")
+	}
+}
+
+func TestLoadBalancer_SelectNode_RoundRobinIntegration(t *testing.T) {
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{
+			"g1": {ID: "g1", LoadBalanceMethod: model.LoadBalanceRoundRobin},
+		},
+		healthyNodes: map[string][]model.ProxyGroupNode{
+			"g1": {
+				{ID: "n1", ClientID: "c1"},
+				{ID: "n2", ClientID: "c2"},
+				{ID: "n3", ClientID: "c3"},
+			},
+		},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	counts := make(map[string]int)
+	for i := 0; i < 9; i++ {
+		node, err := lb.SelectNode("g1", "")
+		if err != nil {
+			t.Fatalf("SelectNode error: %v", err)
+		}
+		counts[node.ID]++
+	}
+
+	for _, id := range []string{"n1", "n2", "n3"} {
+		if counts[id] != 3 {
+			t.Errorf("expected node %s selected 3 times, got %d", id, counts[id])
+		}
+	}
+}
+
+func TestLoadBalancer_SelectNode_NoHealthyNodes(t *testing.T) {
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{
+			"g1": {ID: "g1"},
+		},
+		healthyNodes: map[string][]model.ProxyGroupNode{
+			"g1": {},
+		},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	_, err := lb.SelectNode("g1", "")
+	if !errors.Is(err, ErrNoHealthyNodes) {
+		t.Errorf("expected ErrNoHealthyNodes, got %v", err)
+	}
+}
+
+func TestLoadBalancer_SelectNode_GroupNotFound(t *testing.T) {
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	_, err := lb.SelectNode("nonexistent", "")
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("expected ErrGroupNotFound, got %v", err)
+	}
+}
+
+func TestLoadBalancer_SelectNodeByGroupName(t *testing.T) {
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{
+			"g1": {ID: "g1", LoadBalanceMethod: model.LoadBalanceRoundRobin},
+		},
+		groupsByName: map[string]*model.ProxyGroup{
+			"my-group": {ID: "g1", LoadBalanceMethod: model.LoadBalanceRoundRobin},
+		},
+		healthyNodes: map[string][]model.ProxyGroupNode{
+			"g1": {{ID: "n1", ClientID: "c1"}},
+		},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	node, err := lb.SelectNodeByGroupName("my-group", "")
+	if err != nil {
+		t.Fatalf("SelectNodeByGroupName error: %v", err)
+	}
+	if node.ID != "n1" {
+		t.Errorf("expected node n1, got %s", node.ID)
+	}
+}
+
+func TestLoadBalancer_ResolveTarget_DirectClient(t *testing.T) {
+	mock := &mockProxyGroupReader{}
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	clientID, nodeID, err := lb.ResolveTarget("client-123", "")
+	if err != nil {
+		t.Fatalf("ResolveTarget error: %v", err)
+	}
+	if clientID != "client-123" {
+		t.Errorf("expected clientID 'client-123', got %q", clientID)
+	}
+	if nodeID != "" {
+		t.Errorf("expected empty nodeID, got %q", nodeID)
+	}
+}
+
+func TestLoadBalancer_ResolveTarget_GroupByID(t *testing.T) {
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{
+			"group-id": {ID: "group-id", LoadBalanceMethod: model.LoadBalanceRoundRobin},
+		},
+		healthyNodes: map[string][]model.ProxyGroupNode{
+			"group-id": {{ID: "n1", ClientID: "c1"}},
+		},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	clientID, nodeID, err := lb.ResolveTarget("@group-id", "")
+	if err != nil {
+		t.Fatalf("ResolveTarget error: %v", err)
+	}
+	if clientID != "c1" {
+		t.Errorf("expected clientID 'c1', got %q", clientID)
+	}
+	if nodeID != "n1" {
+		t.Errorf("expected nodeID 'n1', got %q", nodeID)
+	}
+}
+
+func TestLoadBalancer_ResolveTarget_GroupByName(t *testing.T) {
+	g := &model.ProxyGroup{ID: "g1", LoadBalanceMethod: model.LoadBalanceRoundRobin}
+	mock := &mockProxyGroupReader{
+		groups: map[string]*model.ProxyGroup{
+			// GetByID("my-group") fails (not an ID), but after name lookup
+			// SelectNode is called with group.ID="g1", so we need it here.
+			"g1": g,
+		},
+		groupsByName: map[string]*model.ProxyGroup{
+			"my-group": g,
+		},
+		healthyNodes: map[string][]model.ProxyGroupNode{
+			"g1": {{ID: "n1", ClientID: "c1"}},
+		},
+	}
+
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	clientID, nodeID, err := lb.ResolveTarget("@my-group", "")
+	if err != nil {
+		t.Fatalf("ResolveTarget error: %v", err)
+	}
+	if clientID != "c1" {
+		t.Errorf("expected clientID 'c1', got %q", clientID)
+	}
+	if nodeID != "n1" {
+		t.Errorf("expected nodeID 'n1', got %q", nodeID)
+	}
+}
+
+func TestLoadBalancer_IncrementConnections(t *testing.T) {
+	mock := &mockProxyGroupReader{}
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	if err := lb.IncrementConnections("n1"); err != nil {
+		t.Fatalf("IncrementConnections error: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.incrCalls) != 1 || mock.incrCalls[0] != "n1" {
+		t.Errorf("expected IncrementNodeConns(n1), got %v", mock.incrCalls)
+	}
+}
+
+func TestLoadBalancer_DecrementConnections(t *testing.T) {
+	mock := &mockProxyGroupReader{}
+	lb := &LoadBalancer{proxyStore: mock, rrCounters: make(map[string]*uint64)}
+
+	if err := lb.DecrementConnections("n1"); err != nil {
+		t.Fatalf("DecrementConnections error: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.decrCalls) != 1 || mock.decrCalls[0] != "n1" {
+		t.Errorf("expected DecrementNodeConns(n1), got %v", mock.decrCalls)
 	}
 }

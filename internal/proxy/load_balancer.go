@@ -16,9 +16,18 @@ var (
 	ErrGroupNotFound  = errors.New("proxy group not found")
 )
 
+// ProxyGroupReader abstracts proxy group read operations for testability.
+type ProxyGroupReader interface {
+	GetByID(id string) (*model.ProxyGroup, error)
+	GetByName(name string) (*model.ProxyGroup, error)
+	GetHealthyNodesByGroupID(groupID string) ([]model.ProxyGroupNode, error)
+	IncrementNodeConns(nodeID string) error
+	DecrementNodeConns(nodeID string) error
+}
+
 // LoadBalancer 负载均衡器
 type LoadBalancer struct {
-	storage *storage.Storage
+	proxyStore ProxyGroupReader
 
 	// 轮询计数器 (按组ID)
 	rrCounters map[string]*uint64
@@ -27,19 +36,19 @@ type LoadBalancer struct {
 
 func NewLoadBalancer(s *storage.Storage) *LoadBalancer {
 	return &LoadBalancer{
-		storage:    s,
+		proxyStore: s.ProxyGroup,
 		rrCounters: make(map[string]*uint64),
 	}
 }
 
 // SelectNode 根据负载均衡策略选择节点
 func (lb *LoadBalancer) SelectNode(groupID string, clientIP string) (*model.ProxyGroupNode, error) {
-	group, err := lb.storage.ProxyGroup.GetByID(groupID)
+	group, err := lb.proxyStore.GetByID(groupID)
 	if err != nil {
 		return nil, ErrGroupNotFound
 	}
 
-	nodes, err := lb.storage.ProxyGroup.GetHealthyNodesByGroupID(groupID)
+	nodes, err := lb.proxyStore.GetHealthyNodesByGroupID(groupID)
 	if err != nil || len(nodes) == 0 {
 		return nil, ErrNoHealthyNodes
 	}
@@ -60,7 +69,7 @@ func (lb *LoadBalancer) SelectNode(groupID string, clientIP string) (*model.Prox
 
 // SelectNodeByGroupName 通过组名选择节点
 func (lb *LoadBalancer) SelectNodeByGroupName(groupName string, clientIP string) (*model.ProxyGroupNode, error) {
-	group, err := lb.storage.ProxyGroup.GetByName(groupName)
+	group, err := lb.proxyStore.GetByName(groupName)
 	if err != nil {
 		return nil, ErrGroupNotFound
 	}
@@ -104,17 +113,17 @@ func (lb *LoadBalancer) selectIPHash(nodes []model.ProxyGroupNode, clientIP stri
 
 // IncrementConnections 增加节点连接数
 func (lb *LoadBalancer) IncrementConnections(nodeID string) error {
-	return lb.storage.ProxyGroup.IncrementNodeConns(nodeID)
+	return lb.proxyStore.IncrementNodeConns(nodeID)
 }
 
 // DecrementConnections 减少节点连接数
 func (lb *LoadBalancer) DecrementConnections(nodeID string) error {
-	return lb.storage.ProxyGroup.DecrementNodeConns(nodeID)
+	return lb.proxyStore.DecrementNodeConns(nodeID)
 }
 
 // GetGroupIDByName 通过组名获取组ID
 func (lb *LoadBalancer) GetGroupIDByName(name string) (string, error) {
-	group, err := lb.storage.ProxyGroup.GetByName(name)
+	group, err := lb.proxyStore.GetByName(name)
 	if err != nil {
 		return "", err
 	}

@@ -21,37 +21,77 @@ const (
 
 // 协议常量
 const (
-	HeaderSize     = 9              // Type(1) + StreamID(4) + PayloadLen(4)
-	MaxPayloadSize = 64 * 1024      // 64KB 最大 payload
-	DefaultBufSize = 32 * 1024      // 32KB 默认 buffer
-	MaxStringLen   = 4 * 1024       // 4KB 最大字符串长度
+	HeaderSize     = 9         // Type(1) + StreamID(4) + PayloadLen(4)
+	MaxPayloadSize = 64 * 1024 // 64KB 最大 payload
+	DefaultBufSize = 32 * 1024 // 32KB 默认 buffer
+	MaxStringLen   = 4 * 1024  // 4KB 最大字符串长度
+
+	SmallBufSize  = 4 * 1024  // 4KB
+	MediumBufSize = 16 * 1024 // 16KB
+	LargeBufSize  = 64 * 1024 // 64KB
 )
 
 // 错误定义
 var (
-	ErrInvalidHeader  = errors.New("invalid message header")
+	ErrInvalidHeader   = errors.New("invalid message header")
 	ErrPayloadTooLarge = errors.New("payload too large")
-	ErrInvalidPayload = errors.New("invalid payload format")
-	ErrBufferTooSmall = errors.New("buffer too small")
+	ErrInvalidPayload  = errors.New("invalid payload format")
+	ErrBufferTooSmall  = errors.New("buffer too small")
 )
 
-// BufferPool 全局 buffer 池
-var BufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, DefaultBufSize+HeaderSize)
-		return &buf
-	},
-}
+// 多级 buffer 池
+var (
+	smallBufferPool = sync.Pool{
+		New: func() any {
+			buf := make([]byte, SmallBufSize+HeaderSize)
+			return &buf
+		},
+	}
+	mediumBufferPool = sync.Pool{
+		New: func() any {
+			buf := make([]byte, MediumBufSize+HeaderSize)
+			return &buf
+		},
+	}
+	largeBufferPool = sync.Pool{
+		New: func() any {
+			buf := make([]byte, LargeBufSize+HeaderSize)
+			return &buf
+		},
+	}
+)
 
-// GetBuffer 从池中获取 buffer
+// GetBuffer 从池中获取 Large buffer（向后兼容）
 func GetBuffer() *[]byte {
-	return BufferPool.Get().(*[]byte)
+	return largeBufferPool.Get().(*[]byte)
 }
 
-// PutBuffer 归还 buffer 到池中
+// GetBufferForSize 按需选取合适大小的 buffer
+func GetBufferForSize(payloadSize int) *[]byte {
+	totalSize := payloadSize + HeaderSize
+	switch {
+	case totalSize <= SmallBufSize+HeaderSize:
+		return smallBufferPool.Get().(*[]byte)
+	case totalSize <= MediumBufSize+HeaderSize:
+		return mediumBufferPool.Get().(*[]byte)
+	default:
+		return largeBufferPool.Get().(*[]byte)
+	}
+}
+
+// PutBuffer 根据 cap 归还到正确的 pool
 func PutBuffer(buf *[]byte) {
-	if buf != nil && cap(*buf) >= DefaultBufSize {
-		BufferPool.Put(buf)
+	if buf == nil {
+		return
+	}
+	c := cap(*buf)
+	switch {
+	case c >= LargeBufSize+HeaderSize:
+		largeBufferPool.Put(buf)
+	case c >= MediumBufSize+HeaderSize:
+		mediumBufferPool.Put(buf)
+	case c >= SmallBufSize+HeaderSize:
+		smallBufferPool.Put(buf)
 	}
 }
 
@@ -68,7 +108,7 @@ type TunnelMessage struct {
 // MarshalBinary 二进制序列化
 // 返回的 buffer 来自 pool，调用方需要在使用完后调用 PutBuffer 归还
 func (m *TunnelMessage) MarshalBinary() (*[]byte, int, error) {
-	buf := GetBuffer()
+	buf := GetBufferForSize(m.calcPayloadSize())
 	n, err := m.MarshalTo(*buf)
 	if err != nil {
 		PutBuffer(buf)
@@ -240,11 +280,17 @@ type StreamManager struct {
 
 // Stream 表示一个多路复用流
 type Stream struct {
-	ID      uint32
-	Target  string
-	DataCh  chan []byte
-	CloseCh chan struct{}
-	closed  int32
+	ID              uint32
+	Target          string
+	DataCh          chan []byte
+	CloseCh         chan struct{}
+	closed          int32
+	droppedMessages int64
+}
+
+// DroppedMessages returns the number of dropped messages
+func (s *Stream) DroppedMessages() int64 {
+	return atomic.LoadInt64(&s.droppedMessages)
 }
 
 // NewStreamManager 创建流管理器
@@ -264,7 +310,7 @@ func (sm *StreamManager) NewStream(target string) *Stream {
 	stream := &Stream{
 		ID:      id,
 		Target:  target,
-		DataCh:  make(chan []byte, 256), // 增大 channel 缓冲
+		DataCh:  make(chan []byte, 1024),
 		CloseCh: make(chan struct{}),
 	}
 	sm.streams[id] = stream
@@ -328,12 +374,7 @@ func (s *Stream) Write(data []byte) bool {
 	case <-s.CloseCh:
 		return false
 	default:
-		// channel 满了，尝试非阻塞写入
-		select {
-		case s.DataCh <- data:
-			return true
-		case <-s.CloseCh:
-			return false
-		}
+		atomic.AddInt64(&s.droppedMessages, 1)
+		return false
 	}
 }

@@ -371,6 +371,230 @@ func TestMsgTypes(t *testing.T) {
 	}
 }
 
+// ============================================================
+// Multi-level Buffer Pool (GetBufferForSize / PutBuffer)
+// ============================================================
+
+func TestGetBufferForSize_Small(t *testing.T) {
+	buf := GetBufferForSize(100) // 100 bytes payload -> Small pool
+	if buf == nil {
+		t.Fatal("GetBufferForSize returned nil")
+	}
+	// Small pool returns SmallBufSize + HeaderSize
+	if cap(*buf) < SmallBufSize+HeaderSize {
+		t.Errorf("cap = %d, want >= %d", cap(*buf), SmallBufSize+HeaderSize)
+	}
+	PutBuffer(buf)
+}
+
+func TestGetBufferForSize_Medium(t *testing.T) {
+	buf := GetBufferForSize(SmallBufSize + 1) // exceeds Small -> Medium pool
+	if buf == nil {
+		t.Fatal("GetBufferForSize returned nil")
+	}
+	if cap(*buf) < MediumBufSize+HeaderSize {
+		t.Errorf("cap = %d, want >= %d", cap(*buf), MediumBufSize+HeaderSize)
+	}
+	PutBuffer(buf)
+}
+
+func TestGetBufferForSize_Large(t *testing.T) {
+	buf := GetBufferForSize(MediumBufSize + 1) // exceeds Medium -> Large pool
+	if buf == nil {
+		t.Fatal("GetBufferForSize returned nil")
+	}
+	if cap(*buf) < LargeBufSize+HeaderSize {
+		t.Errorf("cap = %d, want >= %d", cap(*buf), LargeBufSize+HeaderSize)
+	}
+	PutBuffer(buf)
+}
+
+func TestGetBufferForSize_ZeroPayload(t *testing.T) {
+	buf := GetBufferForSize(0)
+	if buf == nil {
+		t.Fatal("GetBufferForSize(0) returned nil")
+	}
+	// Should use small pool
+	if cap(*buf) < SmallBufSize+HeaderSize {
+		t.Errorf("cap = %d, want >= %d", cap(*buf), SmallBufSize+HeaderSize)
+	}
+	PutBuffer(buf)
+}
+
+func TestGetBufferForSize_ExactBoundary(t *testing.T) {
+	// Exactly SmallBufSize payload => total = SmallBufSize + HeaderSize => should fit in Small pool
+	buf := GetBufferForSize(SmallBufSize)
+	if buf == nil {
+		t.Fatal("GetBufferForSize returned nil")
+	}
+	if cap(*buf) < SmallBufSize+HeaderSize {
+		t.Errorf("cap = %d, want >= %d", cap(*buf), SmallBufSize+HeaderSize)
+	}
+	PutBuffer(buf)
+}
+
+func TestPutBuffer_Nil(t *testing.T) {
+	// Should not panic
+	PutBuffer(nil)
+}
+
+func TestPutBuffer_TooSmall(t *testing.T) {
+	// A buffer smaller than SmallBufSize+HeaderSize should be silently discarded
+	buf := make([]byte, 10)
+	PutBuffer(&buf) // should not panic, just not returned to any pool
+}
+
+func TestPutBuffer_CorrectPoolRouting(t *testing.T) {
+	// Get from each pool, put back, get again — verify sizes are consistent
+	tests := []struct {
+		name        string
+		payloadSize int
+		minCap      int
+	}{
+		{"small", 100, SmallBufSize + HeaderSize},
+		{"medium", SmallBufSize + 1, MediumBufSize + HeaderSize},
+		{"large", MediumBufSize + 1, LargeBufSize + HeaderSize},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := GetBufferForSize(tc.payloadSize)
+			if cap(*buf) < tc.minCap {
+				t.Errorf("cap = %d, want >= %d", cap(*buf), tc.minCap)
+			}
+			PutBuffer(buf)
+
+			// Get again — should still be correct size
+			buf2 := GetBufferForSize(tc.payloadSize)
+			if cap(*buf2) < tc.minCap {
+				t.Errorf("after put/get: cap = %d, want >= %d", cap(*buf2), tc.minCap)
+			}
+			PutBuffer(buf2)
+		})
+	}
+}
+
+func TestMarshalBinary_UsesCorrectPool(t *testing.T) {
+	tests := []struct {
+		name        string
+		payloadSize int
+		minCap      int
+	}{
+		{"small_payload", 100, SmallBufSize + HeaderSize},
+		{"medium_payload", SmallBufSize + 1, MediumBufSize + HeaderSize},
+		{"large_payload", MediumBufSize + 1, LargeBufSize + HeaderSize},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := &TunnelMessage{
+				Type:     MsgTypeData,
+				StreamID: 1,
+				Payload:  make([]byte, tc.payloadSize),
+			}
+			buf, _, err := msg.MarshalBinary()
+			if err != nil {
+				t.Fatalf("MarshalBinary: %v", err)
+			}
+			if cap(*buf) < tc.minCap {
+				t.Errorf("MarshalBinary returned cap = %d, want >= %d", cap(*buf), tc.minCap)
+			}
+			PutBuffer(buf)
+		})
+	}
+}
+
+// ============================================================
+// Stream Drop Counting
+// ============================================================
+
+func TestStream_DroppedMessages_InitiallyZero(t *testing.T) {
+	s := &Stream{
+		ID:      1,
+		DataCh:  make(chan []byte, 10),
+		CloseCh: make(chan struct{}),
+	}
+	if s.DroppedMessages() != 0 {
+		t.Errorf("initial DroppedMessages = %d, want 0", s.DroppedMessages())
+	}
+}
+
+func TestStream_Write_DropsWhenFull(t *testing.T) {
+	s := &Stream{
+		ID:      1,
+		DataCh:  make(chan []byte, 2),
+		CloseCh: make(chan struct{}),
+	}
+
+	// Fill the channel
+	s.Write([]byte("1"))
+	s.Write([]byte("2"))
+
+	// Third write should be dropped
+	ok := s.Write([]byte("3"))
+	if ok {
+		t.Error("Write should return false when channel is full")
+	}
+
+	if s.DroppedMessages() != 1 {
+		t.Errorf("DroppedMessages = %d, want 1", s.DroppedMessages())
+	}
+
+	// Drop a few more
+	s.Write([]byte("4"))
+	s.Write([]byte("5"))
+
+	if s.DroppedMessages() != 3 {
+		t.Errorf("DroppedMessages = %d, want 3", s.DroppedMessages())
+	}
+}
+
+func TestStream_Write_DropsConcurrent(t *testing.T) {
+	s := &Stream{
+		ID:      1,
+		DataCh:  make(chan []byte, 1),
+		CloseCh: make(chan struct{}),
+	}
+
+	// Fill channel
+	s.Write([]byte("fill"))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Write([]byte("data"))
+		}()
+	}
+	wg.Wait()
+
+	dropped := s.DroppedMessages()
+	if dropped != 100 {
+		t.Errorf("DroppedMessages = %d, want 100", dropped)
+	}
+}
+
+func TestStream_Write_ClosedChannelDrop(t *testing.T) {
+	s := &Stream{
+		ID:      1,
+		DataCh:  make(chan []byte, 10),
+		CloseCh: make(chan struct{}),
+	}
+
+	s.Close()
+
+	ok := s.Write([]byte("after close"))
+	if ok {
+		t.Error("Write should return false after Close")
+	}
+
+	// Drop should NOT be counted for closed stream (returns early via IsClosed check)
+	if s.DroppedMessages() != 0 {
+		t.Errorf("DroppedMessages = %d, want 0 (closed stream should not count drops)", s.DroppedMessages())
+	}
+}
+
 // ===== Benchmarks =====
 
 func BenchmarkTunnelMessageMarshal(b *testing.B) {

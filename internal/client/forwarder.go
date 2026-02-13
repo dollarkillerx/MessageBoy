@@ -19,6 +19,7 @@ type Forwarder struct {
 	cfg        ForwarderSection
 
 	listener       net.Listener
+	listenerMu     sync.Mutex
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
 	trafficCounter *TrafficCounter
@@ -46,7 +47,9 @@ func (f *Forwarder) Start() error {
 		}
 		return err
 	}
+	f.listenerMu.Lock()
 	f.listener = listener
+	f.listenerMu.Unlock()
 
 	// 上报运行状态
 	if f.statusCallback != nil {
@@ -84,9 +87,11 @@ func (f *Forwarder) Start() error {
 
 func (f *Forwarder) Stop() {
 	close(f.stopCh)
+	f.listenerMu.Lock()
 	if f.listener != nil {
 		f.listener.Close()
 	}
+	f.listenerMu.Unlock()
 	f.wg.Wait()
 }
 

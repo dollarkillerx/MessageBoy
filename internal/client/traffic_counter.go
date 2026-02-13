@@ -7,8 +7,7 @@ import (
 
 // TrafficCounter 客户端流量统计器
 type TrafficCounter struct {
-	stats map[string]*RuleTraffic
-	mu    sync.RWMutex
+	stats sync.Map // map[string]*RuleTraffic
 }
 
 // RuleTraffic 单条规则的流量统计
@@ -30,31 +29,16 @@ type TrafficReport struct {
 }
 
 func NewTrafficCounter() *TrafficCounter {
-	return &TrafficCounter{
-		stats: make(map[string]*RuleTraffic),
-	}
+	return &TrafficCounter{}
 }
 
 func (tc *TrafficCounter) getOrCreate(ruleID string) *RuleTraffic {
-	tc.mu.RLock()
-	stat, ok := tc.stats[ruleID]
-	tc.mu.RUnlock()
-
-	if ok {
-		return stat
+	if v, ok := tc.stats.Load(ruleID); ok {
+		return v.(*RuleTraffic)
 	}
-
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	// Double check
-	if stat, ok = tc.stats[ruleID]; ok {
-		return stat
-	}
-
-	stat = &RuleTraffic{RuleID: ruleID}
-	tc.stats[ruleID] = stat
-	return stat
+	stat := &RuleTraffic{RuleID: ruleID}
+	actual, _ := tc.stats.LoadOrStore(ruleID, stat)
+	return actual.(*RuleTraffic)
 }
 
 // AddBytesIn 增加入站流量
@@ -84,28 +68,25 @@ func (tc *TrafficCounter) DecrementConn(ruleID string) {
 
 // GetAndReset 获取并重置流量统计 (用于上报)
 func (tc *TrafficCounter) GetAndReset() []TrafficReport {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	reports := make([]TrafficReport, 0, len(tc.stats))
-	for ruleID, stat := range tc.stats {
+	var reports []TrafficReport
+	tc.stats.Range(func(key, value any) bool {
+		stat := value.(*RuleTraffic)
 		bytesIn := atomic.SwapInt64(&stat.BytesIn, 0)
 		bytesOut := atomic.SwapInt64(&stat.BytesOut, 0)
 		conns := atomic.SwapInt64(&stat.Connections, 0)
-		activeConns := atomic.LoadInt32(&stat.ActiveConns) // 读取当前活跃连接数（不重置）
+		activeConns := atomic.LoadInt32(&stat.ActiveConns)
 
-		// 上报有流量或有活跃连接的规则
 		if bytesIn > 0 || bytesOut > 0 || conns > 0 || activeConns > 0 {
 			reports = append(reports, TrafficReport{
-				RuleID:      ruleID,
+				RuleID:      key.(string),
 				BytesIn:     bytesIn,
 				BytesOut:    bytesOut,
 				Connections: conns,
 				ActiveConns: activeConns,
 			})
 		}
-	}
-
+		return true
+	})
 	return reports
 }
 

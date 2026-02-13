@@ -21,12 +21,17 @@ func TestForwarderStatusCallback_Success(t *testing.T) {
 	var receivedError string
 	var callCount int
 
+	ready := make(chan struct{}, 1)
 	callback := func(ruleID, status, errMsg string) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedStatus = status
 		receivedError = errMsg
 		callCount++
+		select {
+		case ready <- struct{}{}:
+		default:
+		}
 	}
 
 	cfg := ForwarderSection{
@@ -41,8 +46,8 @@ func TestForwarderStatusCallback_Success(t *testing.T) {
 		f.Start()
 	}()
 
-	// Give it time to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for callback to fire (listener is ready)
+	<-ready
 
 	// Stop the forwarder
 	f.Stop()
@@ -172,4 +177,31 @@ func TestNewForwarder(t *testing.T) {
 	if f.statusCallback == nil {
 		t.Error("Expected statusCallback to be set")
 	}
+}
+
+func TestForwarder_GetConfigHash(t *testing.T) {
+	cfg := ForwarderSection{}
+	f := NewForwarder("r1", "0.0.0.0:8080", "localhost:80", cfg, nil, nil)
+
+	expected := "direct:0.0.0.0:8080:localhost:80"
+	if got := f.GetConfigHash(); got != expected {
+		t.Errorf("GetConfigHash() = %q, want %q", got, expected)
+	}
+}
+
+func TestForwarder_GetListenAddr(t *testing.T) {
+	cfg := ForwarderSection{}
+	f := NewForwarder("r1", "0.0.0.0:9090", "localhost:80", cfg, nil, nil)
+
+	if got := f.GetListenAddr(); got != "0.0.0.0:9090" {
+		t.Errorf("GetListenAddr() = %q, want %q", got, "0.0.0.0:9090")
+	}
+}
+
+func TestForwarder_StopBeforeStart(t *testing.T) {
+	cfg := ForwarderSection{}
+	f := NewForwarder("r1", "127.0.0.1:0", "localhost:80", cfg, nil, nil)
+
+	// Should not panic
+	f.Stop()
 }
