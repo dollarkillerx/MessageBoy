@@ -4,10 +4,61 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// copyBufferSize: io.Copy 内部默认也是 32KB，这里复用同样大小，兼顾吞吐和内存
+const copyBufferSize = 32 * 1024
+
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, copyBufferSize)
+		return &b
+	},
+}
+
+// copyAndCount 在 dst/src 之间复制，并按 isIn 把字节数累加到 stat。
+// 当 stat == nil 时退化为 io.Copy，让内核在可能时走 splice/sendfile 零拷贝路径。
+func copyAndCount(dst io.Writer, src io.Reader, stat *RuleTraffic, isIn bool) (int64, error) {
+	if stat == nil {
+		return io.Copy(dst, src)
+	}
+
+	bufp := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(bufp)
+	buf := *bufp
+
+	var total int64
+	for {
+		nr, rerr := src.Read(buf)
+		if nr > 0 {
+			nw, werr := dst.Write(buf[:nr])
+			if nw > 0 {
+				total += int64(nw)
+				if isIn {
+					atomic.AddInt64(&stat.BytesIn, int64(nw))
+				} else {
+					atomic.AddInt64(&stat.BytesOut, int64(nw))
+				}
+			}
+			if werr != nil {
+				return total, werr
+			}
+			if nw != nr {
+				return total, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return total, nil
+			}
+			return total, rerr
+		}
+	}
+}
 
 // StatusCallback 状态回调函数类型
 type StatusCallback func(ruleID, status, errMsg string)
@@ -109,6 +160,8 @@ func (f *Forwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()
 
+	tuneTCPConn(clientConn)
+
 	// 统计连接数
 	if f.trafficCounter != nil {
 		f.trafficCounter.IncrementConn(f.id)
@@ -122,32 +175,33 @@ func (f *Forwarder) handleConnection(clientConn net.Conn) {
 		return
 	}
 	defer targetConn.Close()
+	tuneTCPConn(targetConn)
 
-	// 双向转发
-	done := make(chan struct{}, 2)
+	// 预解析 *RuleTraffic，省掉每次 copyAndCount 的 map lookup；nil counter 触发 splice 快路径
+	var stat *RuleTraffic
+	if f.trafficCounter != nil {
+		stat = f.trafficCounter.GetOrCreateStat(f.id)
+	}
+
+	// 双向转发：任一方向结束时 close 双端触发对端退出，两侧都退出后才返回
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// 客户端 -> 目标 (出站流量)
 	go func() {
-		if f.trafficCounter != nil {
-			countingReader := NewCountingReader(clientConn, f.trafficCounter, f.id, false)
-			io.Copy(targetConn, countingReader)
-		} else {
-			io.Copy(targetConn, clientConn)
-		}
-		done <- struct{}{}
+		defer wg.Done()
+		defer targetConn.Close()
+		defer clientConn.Close()
+		copyAndCount(targetConn, clientConn, stat, false)
 	}()
 
 	// 目标 -> 客户端 (入站流量)
 	go func() {
-		if f.trafficCounter != nil {
-			countingReader := NewCountingReader(targetConn, f.trafficCounter, f.id, true)
-			io.Copy(clientConn, countingReader)
-		} else {
-			io.Copy(clientConn, targetConn)
-		}
-		done <- struct{}{}
+		defer wg.Done()
+		defer clientConn.Close()
+		defer targetConn.Close()
+		copyAndCount(clientConn, targetConn, stat, true)
 	}()
 
-	// 等待任一方向完成
-	<-done
+	wg.Wait()
 }

@@ -10,6 +10,9 @@ import (
 	"github.com/dollarkillerx/MessageBoy/internal/relay"
 )
 
+// WSConnProvider 返回当前 WebSocket 连接。重连时提供者会返回新的连接对象。
+type WSConnProvider func() *relay.WSClientConn
+
 // RelayForwarder 处理中继转发
 // 监听本地端口，将流量通过 WebSocket 隧道转发到远端
 type RelayForwarder struct {
@@ -19,7 +22,8 @@ type RelayForwarder struct {
 	relayChain []string
 	cfg        ForwarderSection
 
-	wsConn         *relay.WSClientConn
+	// wsConnProvider 每次调用返回最新的 wsConn，避免持有过期引用
+	wsConnProvider WSConnProvider
 	listener       net.Listener
 	listenerMu     sync.Mutex
 	stopCh         chan struct{}
@@ -29,14 +33,14 @@ type RelayForwarder struct {
 }
 
 // NewRelayForwarder 创建中继转发器
-func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, wsConn *relay.WSClientConn, tc *TrafficCounter, cb StatusCallback) *RelayForwarder {
+func NewRelayForwarder(id, listenAddr, exitAddr string, relayChain []string, cfg ForwarderSection, provider WSConnProvider, tc *TrafficCounter, cb StatusCallback) *RelayForwarder {
 	return &RelayForwarder{
 		id:             id,
 		listenAddr:     listenAddr,
 		exitAddr:       exitAddr,
 		relayChain:     relayChain,
 		cfg:            cfg,
-		wsConn:         wsConn,
+		wsConnProvider: provider,
 		stopCh:         make(chan struct{}),
 		trafficCounter: tc,
 		statusCallback: cb,
@@ -122,15 +126,24 @@ func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 	defer f.wg.Done()
 	defer clientConn.Close()
 
+	tuneTCPConn(clientConn)
+
 	// 统计连接数
 	if f.trafficCounter != nil {
 		f.trafficCounter.IncrementConn(f.id)
 		defer f.trafficCounter.DecrementConn(f.id)
 	}
 
+	// 连接生命周期内锁定一个 wsConn 快照（stream 归属于该连接）
+	ws := f.wsConnProvider()
+	if ws == nil {
+		log.Warn().Str("rule_id", f.id).Msg("Relay forwarder dropping connection: wsConn unavailable")
+		return
+	}
+
 	// 创建一个新的流
-	stream := f.wsConn.GetStreams().NewStream(f.exitAddr)
-	defer f.wsConn.GetStreams().RemoveStream(stream.ID)
+	stream := ws.GetStreams().NewStream(f.exitAddr)
+	defer ws.GetStreams().RemoveStream(stream.ID)
 
 	log.Debug().
 		Uint32("stream_id", stream.ID).
@@ -150,7 +163,7 @@ func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 		connectMsg.Payload = []byte(f.relayChain[0])
 	}
 
-	if err := f.wsConn.Send(connectMsg); err != nil {
+	if err := ws.Send(connectMsg); err != nil {
 		log.Warn().Err(err).Msg("Failed to send connect message")
 		return
 	}
@@ -162,24 +175,19 @@ func (f *RelayForwarder) handleConnection(clientConn net.Conn) {
 
 	log.Debug().Uint32("stream_id", stream.ID).Msg("Relay tunnel established")
 
-	// 双向转发（使用零拷贝优化）
-	done := make(chan struct{}, 2)
-
-	// 客户端 -> 隧道（使用 buffer pool）
-	go f.forwardToTunnel(clientConn, stream, done)
-
-	// 隧道 -> 客户端
-	go f.forwardFromTunnel(clientConn, stream, done)
-
-	// 等待任一方向完成
-	<-done
+	// 双向转发：任一方向结束都关闭对端并等待两侧都退出
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go f.forwardToTunnel(ws, clientConn, stream, &wg)
+	go f.forwardFromTunnel(clientConn, stream, &wg)
+	wg.Wait()
 
 	// 发送关闭消息
 	closeMsg := &relay.TunnelMessage{
 		Type:     relay.MsgTypeClose,
 		StreamID: stream.ID,
 	}
-	f.wsConn.Send(closeMsg)
+	ws.Send(closeMsg)
 }
 
 // waitForConnAck 等待连接确认
@@ -215,46 +223,49 @@ func (f *RelayForwarder) waitForConnAck(stream *relay.Stream) bool {
 }
 
 // forwardToTunnel 从客户端转发到隧道（使用 buffer pool 优化）
-func (f *RelayForwarder) forwardToTunnel(clientConn net.Conn, stream *relay.Stream, done chan struct{}) {
-	defer func() { done <- struct{}{} }()
+func (f *RelayForwarder) forwardToTunnel(ws *relay.WSClientConn, clientConn net.Conn, stream *relay.Stream, wg *sync.WaitGroup) {
+	defer wg.Done()
+	// 一端结束时关闭 stream 与 conn，驱使另一端退出
+	defer stream.Close()
+	defer clientConn.Close()
 
-	// 使用 buffer pool
 	buf := relay.GetBuffer()
 	defer relay.PutBuffer(buf)
 
 	for {
-		// 直接读取到 buffer 的 payload 区域
 		n, err := clientConn.Read((*buf)[relay.HeaderSize:])
 		if err != nil {
 			return
 		}
 
-		// 统计出站流量
 		if f.trafficCounter != nil {
 			f.trafficCounter.AddBytesOut(f.id, int64(n))
 		}
 
-		// 构建消息并发送
 		msg := &relay.TunnelMessage{
 			Type:     relay.MsgTypeData,
 			StreamID: stream.ID,
 			Payload:  (*buf)[relay.HeaderSize : relay.HeaderSize+n],
 		}
 
-		if err := f.wsConn.Send(msg); err != nil {
+		if err := ws.Send(msg); err != nil {
 			return
 		}
 	}
 }
 
 // forwardFromTunnel 从隧道转发到客户端
-func (f *RelayForwarder) forwardFromTunnel(clientConn net.Conn, stream *relay.Stream, done chan struct{}) {
-	defer func() { done <- struct{}{} }()
+func (f *RelayForwarder) forwardFromTunnel(clientConn net.Conn, stream *relay.Stream, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer stream.Close()
+	defer clientConn.Close()
 
 	for {
 		select {
-		case data := <-stream.DataCh:
-			// 统计入站流量
+		case data, ok := <-stream.DataCh:
+			if !ok {
+				return
+			}
 			if f.trafficCounter != nil {
 				f.trafficCounter.AddBytesIn(f.id, int64(len(data)))
 			}
@@ -265,4 +276,15 @@ func (f *RelayForwarder) forwardFromTunnel(clientConn net.Conn, stream *relay.St
 			return
 		}
 	}
+}
+
+// tuneTCPConn 调校 TCP 连接：开启 KeepAlive（感知半开连接）和 NoDelay（关闭 Nagle，降低小包延迟）
+func tuneTCPConn(conn net.Conn) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetKeepAlive(true)
+	_ = tc.SetKeepAlivePeriod(30 * time.Second)
+	_ = tc.SetNoDelay(true)
 }

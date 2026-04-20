@@ -33,10 +33,12 @@ const (
 
 // 错误定义
 var (
-	ErrInvalidHeader   = errors.New("invalid message header")
-	ErrPayloadTooLarge = errors.New("payload too large")
-	ErrInvalidPayload  = errors.New("invalid payload format")
-	ErrBufferTooSmall  = errors.New("buffer too small")
+	ErrInvalidHeader    = errors.New("invalid message header")
+	ErrPayloadTooLarge  = errors.New("payload too large")
+	ErrInvalidPayload   = errors.New("invalid payload format")
+	ErrBufferTooSmall   = errors.New("buffer too small")
+	ErrConnClosed       = errors.New("ws client conn closed")
+	ErrAlreadyConnected = errors.New("ws client already connected")
 )
 
 // 多级 buffer 池

@@ -3,6 +3,7 @@ package relay
 import (
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,6 +35,10 @@ type WSClientConn struct {
 
 	streams   *StreamManager
 	reconnect bool
+
+	// reconnecting 保证同一时刻只有一条 reconnectLoop 和一对 pump 在跑。
+	// 通过 CAS 切换；1 表示正在重连或已有 pump 存活。
+	reconnecting int32
 }
 
 // 全局共享加密器 (用于中继数据加密)
@@ -67,8 +72,19 @@ func NewWSClientConn(endpoint, clientID, secretKey string) (*WSClientConn, error
 	}, nil
 }
 
-// Connect 连接到 WebSocket 服务器
+// Connect 连接到 WebSocket 服务器。若当前已有活跃连接，会返回 ErrAlreadyConnected。
 func (c *WSClientConn) Connect() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrConnClosed
+	}
+	if c.conn != nil {
+		c.mu.Unlock()
+		return ErrAlreadyConnected
+	}
+	c.mu.Unlock()
+
 	u, err := url.Parse(c.endpoint)
 	if err != nil {
 		return err
@@ -94,8 +110,18 @@ func (c *WSClientConn) Connect() error {
 	}
 
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		conn.Close()
+		return ErrConnClosed
+	}
+	if c.conn != nil {
+		// 理论上不会发生，防御一下
+		c.mu.Unlock()
+		conn.Close()
+		return ErrAlreadyConnected
+	}
 	c.conn = conn
-	c.closed = false
 	c.mu.Unlock()
 
 	go c.readPump()
@@ -171,21 +197,31 @@ func (c *WSClientConn) writePump() {
 	}
 }
 
-// handleDisconnect 处理断开连接
+// handleDisconnect 处理断开连接。每对 readPump/writePump 退出都会触发，
+// 但只有第一次调用会真正标记断开并拉起 reconnectLoop。
 func (c *WSClientConn) handleDisconnect() {
 	c.mu.Lock()
 	wasConnected := c.conn != nil
 	c.conn = nil
+	shouldReconnect := wasConnected && c.reconnect && !c.closed
 	c.mu.Unlock()
 
-	if wasConnected && c.reconnect {
-		log.Info().Msg("WebSocket disconnected, attempting reconnect...")
-		go c.reconnectLoop()
+	if !shouldReconnect {
+		return
 	}
+
+	// CAS 保证同一时刻只有一条 reconnectLoop 在跑
+	if !atomic.CompareAndSwapInt32(&c.reconnecting, 0, 1) {
+		return
+	}
+	log.Info().Msg("WebSocket disconnected, attempting reconnect...")
+	go c.reconnectLoop()
 }
 
 // reconnectLoop 重连循环
 func (c *WSClientConn) reconnectLoop() {
+	defer atomic.StoreInt32(&c.reconnecting, 0)
+
 	backoff := time.Second
 
 	for {
@@ -193,6 +229,14 @@ func (c *WSClientConn) reconnectLoop() {
 		case <-c.closeCh:
 			return
 		case <-time.After(backoff):
+		}
+
+		// 连接前再次检查关闭状态
+		c.mu.Lock()
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return
 		}
 
 		if err := c.Connect(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -22,13 +23,24 @@ type Client struct {
 	secretKey  string
 	wsEndpoint string
 
-	wsConn         *relay.WSClientConn
+	// wsConn 用 atomic.Pointer 保护，connectWebSocket 写入，各处读取
+	wsConn         atomic.Pointer[relay.WSClientConn]
 	forwarders     map[string]ForwarderInterface
 	mu             sync.RWMutex
 	trafficCounter *TrafficCounter
 
+	// asyncWg 跟踪 handleTunnelMessages 里拉起的异步 goroutine
+	asyncWg sync.WaitGroup
+	// loopWg 跟踪 mainLoop/heartbeatLoop/trafficReportLoop 三个主循环
+	loopWg sync.WaitGroup
+
 	stopCh      chan struct{}
 	reconnectCh chan struct{} // 触发重连
+}
+
+// getWSConn 原子读取当前 WebSocket 连接。nil 表示尚未建立或已关闭。
+func (c *Client) getWSConn() *relay.WSClientConn {
+	return c.wsConn.Load()
 }
 
 // ForwarderInterface 转发器接口
@@ -60,13 +72,10 @@ func (c *Client) Run() error {
 	log.Info().Str("client_id", c.clientID).Msg("Registered successfully")
 
 	// 启动主循环
-	go c.mainLoop()
-
-	// 启动心跳
-	go c.heartbeatLoop()
-
-	// 启动流量上报
-	go c.trafficReportLoop()
+	c.loopWg.Add(3)
+	go func() { defer c.loopWg.Done(); c.mainLoop() }()
+	go func() { defer c.loopWg.Done(); c.heartbeatLoop() }()
+	go func() { defer c.loopWg.Done(); c.trafficReportLoop() }()
 
 	// 等待停止信号
 	<-c.stopCh
@@ -138,14 +147,27 @@ func (c *Client) waitBeforeReconnect(delay time.Duration) {
 
 func (c *Client) Stop() {
 	close(c.stopCh)
+
+	// 先停 wsConn，让正在阻塞在 Recv/Send 的 goroutine 退出
+	if ws := c.wsConn.Swap(nil); ws != nil {
+		ws.Close()
+	}
+
+	// 停所有 forwarder
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	fs := make([]ForwarderInterface, 0, len(c.forwarders))
 	for _, f := range c.forwarders {
+		fs = append(fs, f)
+	}
+	c.forwarders = map[string]ForwarderInterface{}
+	c.mu.Unlock()
+	for _, f := range fs {
 		f.Stop()
 	}
-	if c.wsConn != nil {
-		c.wsConn.Close()
-	}
+
+	// 等所有异步任务和主循环退出
+	c.asyncWg.Wait()
+	c.loopWg.Wait()
 }
 
 func (c *Client) register() error {
@@ -198,14 +220,21 @@ func (c *Client) connectWebSocket() error {
 		return err
 	}
 
-	c.wsConn = wsConn
+	// 原子替换 wsConn，同时关掉旧的（如果存在）
+	if old := c.wsConn.Swap(wsConn); old != nil {
+		old.Close()
+	}
 	log.Info().Str("endpoint", c.wsEndpoint).Msg("WebSocket connected")
 	return nil
 }
 
 func (c *Client) handleTunnelMessages() {
+	ws := c.getWSConn()
+	if ws == nil {
+		return
+	}
 	for {
-		msg := c.wsConn.Recv()
+		msg := ws.Recv()
 		if msg == nil {
 			return
 		}
@@ -213,28 +242,35 @@ func (c *Client) handleTunnelMessages() {
 		switch msg.Type {
 		case relay.MsgTypeConnect:
 			// 作为出口节点，需要连接目标
-			go c.handleIncomingConnect(msg)
+			c.spawnAsync(func() { c.handleIncomingConnect(ws, msg) })
 
 		case relay.MsgTypeConnAck:
 			// 连接确认，通知等待的 stream
-			stream := c.wsConn.GetStreams().GetStream(msg.StreamID)
+			stream := ws.GetStreams().GetStream(msg.StreamID)
 			if stream != nil {
 				log.Debug().Uint32("stream_id", msg.StreamID).Msg("Received ConnAck, notifying stream")
-				stream.Write([]byte{relay.MsgTypeConnAck})
+				if !stream.Write([]byte{relay.MsgTypeConnAck}) {
+					log.Warn().Uint32("stream_id", msg.StreamID).Msg("ConnAck dropped, closing stream")
+					ws.GetStreams().RemoveStream(msg.StreamID)
+				}
 			} else {
 				log.Warn().Uint32("stream_id", msg.StreamID).Msg("Received ConnAck but stream not found")
 			}
 
 		case relay.MsgTypeData:
 			// 数据消息，转发到对应的 stream
-			stream := c.wsConn.GetStreams().GetStream(msg.StreamID)
+			stream := ws.GetStreams().GetStream(msg.StreamID)
 			if stream != nil {
-				stream.Write(msg.Payload)
+				if !stream.Write(msg.Payload) {
+					// 缓冲区满，说明下游消费不过来，关闭流以触发上游停止
+					log.Warn().Uint32("stream_id", msg.StreamID).Msg("Stream buffer full, closing stream")
+					ws.GetStreams().RemoveStream(msg.StreamID)
+				}
 			}
 
 		case relay.MsgTypeClose:
 			// 关闭消息
-			c.wsConn.GetStreams().RemoveStream(msg.StreamID)
+			ws.GetStreams().RemoveStream(msg.StreamID)
 
 		case relay.MsgTypeError:
 			// 错误消息，通知等待的 stream
@@ -242,7 +278,7 @@ func (c *Client) handleTunnelMessages() {
 				Uint32("stream_id", msg.StreamID).
 				Str("error", msg.Error).
 				Msg("Received error message")
-			stream := c.wsConn.GetStreams().GetStream(msg.StreamID)
+			stream := ws.GetStreams().GetStream(msg.StreamID)
 			if stream != nil {
 				stream.Write([]byte{relay.MsgTypeError})
 				stream.Close()
@@ -253,24 +289,38 @@ func (c *Client) handleTunnelMessages() {
 		case relay.MsgTypeRuleUpdate:
 			// 规则更新通知，重新获取规则
 			log.Info().Str("client_id", c.clientID).Msg("=== Received MsgTypeRuleUpdate from server ===")
-			go func() {
+			c.spawnAsync(func() {
 				log.Debug().Msg("Starting to fetch and apply new rules...")
 				if err := c.fetchAndApplyRules(); err != nil {
 					log.Warn().Err(err).Msg("Failed to fetch updated rules")
 				} else {
 					log.Info().Msg("Successfully fetched and applied new rules")
 				}
-			}()
+			})
 
 		case relay.MsgTypeCheckPort:
 			// 端口检查请求
-			go c.handleCheckPort(msg)
+			c.spawnAsync(func() { c.handleCheckPort(ws, msg) })
 		}
 	}
 }
 
+// spawnAsync 启动一个跟踪的后台 goroutine。Stop 时会 Wait。
+func (c *Client) spawnAsync(fn func()) {
+	select {
+	case <-c.stopCh:
+		return
+	default:
+	}
+	c.asyncWg.Add(1)
+	go func() {
+		defer c.asyncWg.Done()
+		fn()
+	}()
+}
+
 // handleIncomingConnect 处理入站的连接请求 (作为出口节点)
-func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
+func (c *Client) handleIncomingConnect(ws *relay.WSClientConn, msg *relay.TunnelMessage) {
 	target := msg.Target
 	log.Debug().
 		Uint32("stream_id", msg.StreamID).
@@ -287,21 +337,22 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 			StreamID: msg.StreamID,
 			Error:    err.Error(),
 		}
-		c.wsConn.Send(errMsg)
+		ws.Send(errMsg)
 		return
 	}
+	tuneTCPConn(targetConn)
 
 	// 创建一个 stream 用于跟踪此连接
 	stream := &relay.Stream{
 		ID:      msg.StreamID,
 		Target:  target,
-		DataCh:  make(chan []byte, 100),
+		DataCh:  make(chan []byte, 1024),
 		CloseCh: make(chan struct{}),
 	}
 
 	// 手动添加到 streams 管理器
-	c.wsConn.GetStreams().AddStream(stream)
-	defer c.wsConn.GetStreams().RemoveStream(msg.StreamID)
+	ws.GetStreams().AddStream(stream)
+	defer ws.GetStreams().RemoveStream(msg.StreamID)
 	defer targetConn.Close()
 
 	// 发送 ConnAck
@@ -309,7 +360,7 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 		Type:     relay.MsgTypeConnAck,
 		StreamID: msg.StreamID,
 	}
-	if err := c.wsConn.Send(ackMsg); err != nil {
+	if err := ws.Send(ackMsg); err != nil {
 		log.Warn().Err(err).Uint32("stream_id", msg.StreamID).Msg("Failed to send ConnAck")
 		return
 	}
@@ -319,18 +370,20 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 		Str("target", target).
 		Msg("ConnAck sent, tunnel connected to target")
 
-	// 双向转发（使用 buffer pool 优化）
-	done := make(chan struct{}, 2)
+	// 双向转发：一方结束时关闭双端，双方都退出后才返回
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// 目标 -> 隧道（零拷贝优化）
 	go func() {
-		defer func() { done <- struct{}{} }()
-		// 使用 buffer pool
+		defer wg.Done()
+		defer stream.Close()
+		defer targetConn.Close()
+
 		buf := relay.GetBuffer()
 		defer relay.PutBuffer(buf)
 
 		for {
-			// 直接读取到 buffer 的 payload 区域
 			n, err := targetConn.Read((*buf)[relay.HeaderSize:])
 			if err != nil {
 				return
@@ -342,7 +395,7 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 				Payload:  (*buf)[relay.HeaderSize : relay.HeaderSize+n],
 			}
 
-			if err := c.wsConn.Send(dataMsg); err != nil {
+			if err := ws.Send(dataMsg); err != nil {
 				return
 			}
 		}
@@ -350,10 +403,16 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 
 	// 隧道 -> 目标
 	go func() {
-		defer func() { done <- struct{}{} }()
+		defer wg.Done()
+		defer stream.Close()
+		defer targetConn.Close()
+
 		for {
 			select {
-			case data := <-stream.DataCh:
+			case data, ok := <-stream.DataCh:
+				if !ok {
+					return
+				}
 				if _, err := targetConn.Write(data); err != nil {
 					return
 				}
@@ -363,19 +422,18 @@ func (c *Client) handleIncomingConnect(msg *relay.TunnelMessage) {
 		}
 	}()
 
-	// 等待任一方向完成
-	<-done
+	wg.Wait()
 
 	// 发送关闭消息
 	closeMsg := &relay.TunnelMessage{
 		Type:     relay.MsgTypeClose,
 		StreamID: msg.StreamID,
 	}
-	c.wsConn.Send(closeMsg)
+	ws.Send(closeMsg)
 }
 
 // handleCheckPort 处理端口检查请求
-func (c *Client) handleCheckPort(msg *relay.TunnelMessage) {
+func (c *Client) handleCheckPort(ws *relay.WSClientConn, msg *relay.TunnelMessage) {
 	addr := msg.Target
 	currentRuleID := msg.RuleID
 
@@ -397,8 +455,7 @@ func (c *Client) handleCheckPort(msg *relay.TunnelMessage) {
 					Str("rule_id", currentRuleID).
 					Msg("Port is used by current rule, will be restarted - available")
 				c.mu.RUnlock()
-				// 发送成功响应
-				c.sendPortCheckResult(msg.StreamID, "")
+				c.sendPortCheckResult(ws, msg.StreamID, "")
 				return
 			}
 		}
@@ -415,19 +472,18 @@ func (c *Client) handleCheckPort(msg *relay.TunnelMessage) {
 		log.Info().Str("addr", addr).Msg("Port check passed - port available")
 	}
 
-	// 发送检查结果
-	c.sendPortCheckResult(msg.StreamID, errMsg)
+	c.sendPortCheckResult(ws, msg.StreamID, errMsg)
 }
 
 // sendPortCheckResult 发送端口检查结果
-func (c *Client) sendPortCheckResult(requestID uint32, errMsg string) {
+func (c *Client) sendPortCheckResult(ws *relay.WSClientConn, requestID uint32, errMsg string) {
 	resultMsg := &relay.TunnelMessage{
 		Type:     relay.MsgTypeCheckPortResult,
 		StreamID: requestID,
 		Error:    errMsg,
 	}
 
-	if err := c.wsConn.Send(resultMsg); err != nil {
+	if err := ws.Send(resultMsg); err != nil {
 		log.Warn().Err(err).Uint32("request_id", requestID).Msg("Failed to send port check result")
 	} else {
 		log.Info().
@@ -525,69 +581,54 @@ func computeRuleConfigHash(rule map[string]interface{}) string {
 }
 
 func (c *Client) applyRules(rules []interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	log.Info().Int("rule_count", len(rules)).Msg("Applying rules")
 
-	log.Info().Int("rule_count", len(rules)).Int("current_forwarders", len(c.forwarders)).Msg("Applying rules")
-
-	// 停止不再需要的 forwarder
-	newRuleIDs := make(map[string]bool)
+	newRuleIDs := make(map[string]bool, len(rules))
 	for _, r := range rules {
 		rule := r.(map[string]interface{})
 		newRuleIDs[rule["id"].(string)] = true
 	}
 
+	// 第一阶段：锁内计算 diff（需要停掉哪些、需要重建哪些）
+	c.mu.Lock()
+	toStop := make([]ForwarderInterface, 0)
+	skipRestart := make(map[string]bool, len(rules))
 	for id, f := range c.forwarders {
 		if !newRuleIDs[id] {
-			log.Info().Str("rule_id", id).Msg("Stopping forwarder (rule removed)")
-			f.Stop()
+			toStop = append(toStop, f)
 			delete(c.forwarders, id)
-			log.Info().Str("rule_id", id).Msg("Stopped forwarder (rule removed)")
 		}
 	}
-
-	// 状态回调
-	statusCallback := func(ruleID, status, errMsg string) {
-		go c.reportRuleStatus(ruleID, status, errMsg)
-	}
-
-	// 启动新的或更新的 forwarder
 	for _, r := range rules {
 		rule := r.(map[string]interface{})
 		id := rule["id"].(string)
-		listenAddr := rule["listen_addr"].(string)
-
-		log.Debug().
-			Str("rule_id", id).
-			Str("listen_addr", listenAddr).
-			Str("type", rule["type"].(string)).
-			Msg("Processing rule")
-
-		// 检查是否需要更新已存在的 forwarder
-		if existingF, exists := c.forwarders[id]; exists {
-			newConfigHash := computeRuleConfigHash(rule)
-			oldConfigHash := existingF.GetConfigHash()
-			log.Debug().
-				Str("rule_id", id).
-				Str("old_hash", oldConfigHash).
-				Str("new_hash", newConfigHash).
-				Bool("changed", oldConfigHash != newConfigHash).
-				Msg("Comparing config hash")
-			if oldConfigHash == newConfigHash {
-				// 配置未变化，跳过
-				log.Debug().Str("rule_id", id).Msg("Config unchanged, skipping")
+		if existing, ok := c.forwarders[id]; ok {
+			if existing.GetConfigHash() == computeRuleConfigHash(rule) {
+				skipRestart[id] = true
 				continue
 			}
-			// 配置已变化，停止旧的
-			log.Info().
-				Str("rule_id", id).
-				Str("old_hash", oldConfigHash).
-				Str("new_hash", newConfigHash).
-				Msg("Config changed, restarting forwarder")
-			existingF.Stop()
+			toStop = append(toStop, existing)
 			delete(c.forwarders, id)
-		} else {
-			log.Debug().Str("rule_id", id).Msg("New rule, will create forwarder")
+		}
+	}
+	c.mu.Unlock()
+
+	// 第二阶段：锁外停旧 forwarder（避免 Stop 内 wg.Wait 阻塞住整个客户端）
+	for _, f := range toStop {
+		f.Stop()
+	}
+
+	// 状态回调（在后台线程里跑，避免阻塞 forwarder）
+	statusCallback := func(ruleID, status, errMsg string) {
+		c.spawnAsync(func() { c.reportRuleStatus(ruleID, status, errMsg) })
+	}
+
+	// 第三阶段：启动新的/变更的 forwarder
+	for _, r := range rules {
+		rule := r.(map[string]interface{})
+		id := rule["id"].(string)
+		if skipRestart[id] {
+			continue
 		}
 
 		ruleType := rule["type"].(string)
@@ -602,8 +643,10 @@ func (c *Client) applyRules(rules []interface{}) {
 				c.trafficCounter,
 				statusCallback,
 			)
+			c.mu.Lock()
 			c.forwarders[id] = f
-			go f.Start()
+			c.mu.Unlock()
+			c.spawnAsync(func() { f.Start() })
 			log.Info().
 				Str("rule_id", id).
 				Str("listen", rule["listen_addr"].(string)).
@@ -611,13 +654,12 @@ func (c *Client) applyRules(rules []interface{}) {
 				Msg("Started direct forwarder")
 
 		case "relay":
-			if c.wsConn == nil {
+			if c.getWSConn() == nil {
 				log.Warn().Str("rule_id", id).Msg("Cannot start relay forwarder: WebSocket not connected")
-				go c.reportRuleStatus(id, "error", "WebSocket not connected")
+				c.spawnAsync(func() { c.reportRuleStatus(id, "error", "WebSocket not connected") })
 				continue
 			}
 
-			// 解析中继链
 			var relayChain []string
 			if chain, ok := rule["relay_chain"].([]interface{}); ok {
 				for _, v := range chain {
@@ -636,12 +678,14 @@ func (c *Client) applyRules(rules []interface{}) {
 				exitAddr,
 				relayChain,
 				c.cfg.Forwarder,
-				c.wsConn,
+				c.getWSConn,
 				c.trafficCounter,
 				statusCallback,
 			)
+			c.mu.Lock()
 			c.forwarders[id] = f
-			go f.Start()
+			c.mu.Unlock()
+			c.spawnAsync(func() { f.Start() })
 			log.Info().
 				Str("rule_id", id).
 				Str("listen", rule["listen_addr"].(string)).

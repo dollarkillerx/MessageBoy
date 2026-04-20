@@ -126,3 +126,55 @@ func BenchmarkCountingCopy_Sustained(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkCopyAndCount 对比 copyAndCount 和 io.Copy+CountingReader，不经过 socket
+// 使用 net.Pipe 构造内存管道，排除网络因素，只测转发热路径的 CPU/分配开销。
+func BenchmarkCopyAndCount(b *testing.B) {
+	payload := make([]byte, 32*1024)
+
+	b.Run("io.Copy+CountingReader/new", func(b *testing.B) {
+		tc := NewTrafficCounter()
+		b.ResetTimer()
+		b.SetBytes(int64(len(payload)))
+		for i := 0; i < b.N; i++ {
+			r, w := net.Pipe()
+			go func() {
+				w.Write(payload)
+				w.Close()
+			}()
+			cr := NewCountingReader(r, tc, "rule-a", true)
+			io.Copy(io.Discard, cr)
+			r.Close()
+		}
+	})
+
+	b.Run("copyAndCount/stat-cached", func(b *testing.B) {
+		tc := NewTrafficCounter()
+		stat := tc.GetOrCreateStat("rule-a")
+		b.ResetTimer()
+		b.SetBytes(int64(len(payload)))
+		for i := 0; i < b.N; i++ {
+			r, w := net.Pipe()
+			go func() {
+				w.Write(payload)
+				w.Close()
+			}()
+			copyAndCount(io.Discard, r, stat, true)
+			r.Close()
+		}
+	})
+
+	b.Run("copyAndCount/nil-stat (splice-eligible)", func(b *testing.B) {
+		b.ResetTimer()
+		b.SetBytes(int64(len(payload)))
+		for i := 0; i < b.N; i++ {
+			r, w := net.Pipe()
+			go func() {
+				w.Write(payload)
+				w.Close()
+			}()
+			copyAndCount(io.Discard, r, nil, true)
+			r.Close()
+		}
+	})
+}

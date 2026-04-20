@@ -60,10 +60,18 @@ func (tc *TrafficCounter) IncrementConn(ruleID string) {
 	atomic.AddInt32(&stat.ActiveConns, 1)
 }
 
-// DecrementConn 减少活跃连接数
+// DecrementConn 减少活跃连接数，保证不会穿零
 func (tc *TrafficCounter) DecrementConn(ruleID string) {
 	stat := tc.getOrCreate(ruleID)
-	atomic.AddInt32(&stat.ActiveConns, -1)
+	for {
+		cur := atomic.LoadInt32(&stat.ActiveConns)
+		if cur <= 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(&stat.ActiveConns, cur, cur-1) {
+			return
+		}
+	}
 }
 
 // GetAndReset 获取并重置流量统计 (用于上报)
@@ -90,20 +98,24 @@ func (tc *TrafficCounter) GetAndReset() []TrafficReport {
 	return reports
 }
 
-// CountingReader 带计数功能的 Reader
+// GetOrCreateStat 暴露给热路径使用，避免每次读写都走 map lookup
+func (tc *TrafficCounter) GetOrCreateStat(ruleID string) *RuleTraffic {
+	return tc.getOrCreate(ruleID)
+}
+
+// CountingReader 带计数功能的 Reader（保留给外部/测试使用）。
+// 性能热路径请使用 copyAndCount/Forwarder.handleConnection，绕过 map lookup。
 type CountingReader struct {
-	reader  interface{ Read([]byte) (int, error) }
-	counter *TrafficCounter
-	ruleID  string
-	isIn    bool // true: bytes_in, false: bytes_out
+	reader interface{ Read([]byte) (int, error) }
+	stat   *RuleTraffic
+	isIn   bool // true: bytes_in, false: bytes_out
 }
 
 func NewCountingReader(r interface{ Read([]byte) (int, error) }, counter *TrafficCounter, ruleID string, isIn bool) *CountingReader {
 	return &CountingReader{
-		reader:  r,
-		counter: counter,
-		ruleID:  ruleID,
-		isIn:    isIn,
+		reader: r,
+		stat:   counter.getOrCreate(ruleID),
+		isIn:   isIn,
 	}
 }
 
@@ -111,9 +123,9 @@ func (cr *CountingReader) Read(p []byte) (int, error) {
 	n, err := cr.reader.Read(p)
 	if n > 0 {
 		if cr.isIn {
-			cr.counter.AddBytesIn(cr.ruleID, int64(n))
+			atomic.AddInt64(&cr.stat.BytesIn, int64(n))
 		} else {
-			cr.counter.AddBytesOut(cr.ruleID, int64(n))
+			atomic.AddInt64(&cr.stat.BytesOut, int64(n))
 		}
 	}
 	return n, err
@@ -121,18 +133,16 @@ func (cr *CountingReader) Read(p []byte) (int, error) {
 
 // CountingWriter 带计数功能的 Writer
 type CountingWriter struct {
-	writer  interface{ Write([]byte) (int, error) }
-	counter *TrafficCounter
-	ruleID  string
-	isIn    bool
+	writer interface{ Write([]byte) (int, error) }
+	stat   *RuleTraffic
+	isIn   bool
 }
 
 func NewCountingWriter(w interface{ Write([]byte) (int, error) }, counter *TrafficCounter, ruleID string, isIn bool) *CountingWriter {
 	return &CountingWriter{
-		writer:  w,
-		counter: counter,
-		ruleID:  ruleID,
-		isIn:    isIn,
+		writer: w,
+		stat:   counter.getOrCreate(ruleID),
+		isIn:   isIn,
 	}
 }
 
@@ -140,9 +150,9 @@ func (cw *CountingWriter) Write(p []byte) (int, error) {
 	n, err := cw.writer.Write(p)
 	if n > 0 {
 		if cw.isIn {
-			cw.counter.AddBytesIn(cw.ruleID, int64(n))
+			atomic.AddInt64(&cw.stat.BytesIn, int64(n))
 		} else {
-			cw.counter.AddBytesOut(cw.ruleID, int64(n))
+			atomic.AddInt64(&cw.stat.BytesOut, int64(n))
 		}
 	}
 	return n, err

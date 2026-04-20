@@ -4,15 +4,15 @@
 Host = "0.0.0.0"
 Port = 8283
 Debug = true
-ExternalURL = "https://messagebody.cnbaidu.org"
+ExternalURL = "https://proxy.kcgi.edu.kg"
 InstallScriptURL = "https://fileoss.hacksnews.top/message-boy-install.sh"
 
 [Database]
 Host = "127.0.0.1"
-Port = 5532
+Port = 18432
 User = "pacman"
-Password = "Kw7dQwFnLGAe2"
-DBName = "message_boy"
+Password = "MEB3oZZkpxgA1q4WcA10"
+DBName = "myproxy"
 SSLMode = "disable"
 MaxIdleConns = 10
 MaxOpenConns = 100
@@ -25,7 +25,7 @@ Issuer = "messageboy"
 
 [Admin]
 Username = "admin"
-Password = "aRApNoPKXH1iWAoRwMNe"
+Password = "tLEM3zFa9th951K20oX0"
 
 [WebSocket]
 Endpoint = "/ws"
