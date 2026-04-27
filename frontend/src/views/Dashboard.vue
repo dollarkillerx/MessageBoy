@@ -86,22 +86,22 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadData() {
   try {
-    const [clients, rules, groups, traffic, summary] = await Promise.all([
+    const [clients, rulesResp, groups, traffic, summary] = await Promise.all([
       getClientList(),
-      getForwardRuleList(),
+      getForwardRuleList(1, 100),
       getProxyGroupList(),
       getTotalTraffic(),
       getTrafficSummary()
     ])
 
     const clientList = Array.isArray(clients) ? clients : []
-    const ruleList = Array.isArray(rules) ? rules : []
+    const ruleList = Array.isArray(rulesResp.rules) ? rulesResp.rules : []
     const groupList = Array.isArray(groups) ? groups : []
 
     stats.value = {
       totalClients: clientList.length,
       onlineClients: clientList.filter((c: Client) => c.status === 'online').length,
-      totalRules: ruleList.length,
+      totalRules: rulesResp.total ?? ruleList.length,
       enabledRules: ruleList.filter((r: ForwardRule) => r.enabled).length,
       totalGroups: groupList.length
     }

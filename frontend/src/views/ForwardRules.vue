@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, h, computed } from 'vue'
+import { ref, reactive, onMounted, h, computed } from 'vue'
 import {
   NSpace,
   NText,
@@ -38,6 +38,14 @@ const rules = ref<ForwardRule[]>([])
 const clients = ref<Client[]>([])
 const groups = ref<ProxyGroup[]>([])
 const trafficMap = ref<Map<string, TrafficSummary>>(new Map())
+
+const pagination = reactive({
+  page: 1,
+  pageSize: 100,
+  itemCount: 0,
+  pageSizes: [100],
+  showSizePicker: false
+})
 
 // Modal state
 const showModal = ref(false)
@@ -180,13 +188,14 @@ const columns: DataTableColumns<ForwardRule> = [
 async function loadData() {
   loading.value = true
   try {
-    const [rulesData, clientsData, groupsData, trafficData] = await Promise.all([
-      getForwardRuleList(),
+    const [rulesResp, clientsData, groupsData, trafficData] = await Promise.all([
+      getForwardRuleList(pagination.page, pagination.pageSize),
       getClientList(),
       getProxyGroupList(),
       getTrafficSummary()
     ])
-    rules.value = Array.isArray(rulesData) ? rulesData : []
+    rules.value = Array.isArray(rulesResp.rules) ? rulesResp.rules : []
+    pagination.itemCount = rulesResp.total ?? 0
     clients.value = Array.isArray(clientsData) ? clientsData : []
     groups.value = Array.isArray(groupsData) ? groupsData : []
 
@@ -303,6 +312,11 @@ async function handleToggle(id: string, enabled: boolean) {
   }
 }
 
+function handlePageChange(page: number) {
+  pagination.page = page
+  loadData()
+}
+
 onMounted(loadData)
 </script>
 
@@ -323,10 +337,13 @@ onMounted(loadData)
     </NSpace>
 
     <NDataTable
+      remote
       :columns="columns"
       :data="rules"
       :loading="loading"
       :row-key="(row: ForwardRule) => row.id"
+      :pagination="pagination"
+      @update:page="handlePageChange"
     />
 
     <!-- 创建/编辑弹窗 -->

@@ -85,10 +85,14 @@ export const getClientInstallCommand = async (id: string) => {
 }
 
 // Forward Rules
-export const getForwardRuleList = async () => {
-  const result = await rpcCall<{ rules: import('../types').ForwardRule[] }>('getForwardRuleList', {})
-  return result.rules || []
-}
+export const getForwardRuleList = (page = 1, limit = 100) =>
+  rpcCall<{
+    rules: import('../types').ForwardRule[]
+    total: number
+    page: number
+    limit: number
+    pages: number
+  }>('getForwardRuleList', { page, limit })
 
 export const getForwardRule = (id: string) =>
   rpcCall<import('../types').ForwardRule>('getForwardRule', { id })
